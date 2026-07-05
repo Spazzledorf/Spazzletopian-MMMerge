@@ -1,0 +1,49 @@
+-- zzXPDisplay.lua
+-- Replaces "Experience: M" on the Stats tab with "XP: cur / cost / levels".
+-- Swaps GlobalTxt[83] and sets Experience to affordable count so the
+-- native value matches our last digit.
+
+local origExpTxt
+local savedPlayer = -1
+local savedXP
+
+function events.GameInitialized2()
+    function events.L2InterfaceUpd()
+        if Game.CurrentScreen == const.Screens.Inventory and Game.CurrentCharScreen == const.CharScreens.Stats then
+            if not origExpTxt then
+                origExpTxt = Game.GlobalTxt[83]
+            end
+            local pl = Game.CurrentPlayer
+            if pl >= 0 then
+                local xp
+                if savedPlayer == pl and savedXP ~= nil then
+                    xp = savedXP
+                else
+                    xp = Party[pl].Experience
+                end
+                local lvl = Party[pl].LevelBase
+                if lvl < 1 then lvl = 1 end
+                local cost = lvl * 1000
+                local maxLvl = math.floor((1 + math.sqrt(1 + 4 * xp / 500)) / 2)
+                local affordable = math.max(0, maxLvl - lvl)
+                Game.GlobalTxt[83] = string.format("XP: %d / %d / %d", xp, cost, affordable)
+                if savedPlayer ~= pl then
+                    if savedPlayer >= 0 then
+                        Party[savedPlayer].Experience = savedXP
+                    end
+                    savedPlayer = pl
+                    savedXP = xp
+                end
+                Party[pl].Experience = affordable
+            end
+        elseif origExpTxt then
+            Game.GlobalTxt[83] = origExpTxt
+            origExpTxt = nil
+            if savedPlayer >= 0 then
+                Party[savedPlayer].Experience = savedXP
+                savedPlayer = -1
+                savedXP = nil
+            end
+        end
+    end
+end

@@ -1,0 +1,318 @@
+-- Skill Slot Repurposing Reference
+-- This file is a reference document, NOT a functional script (.disabled so
+-- it won't load). Catalogs how and why this project's "Misc" skill slots
+-- (const.Skills 24-38) have been changed from their vanilla function, and
+-- the three reusable patterns for doing this safely, established across a
+-- single long session of iterating on Guardian/Cleave/ManaShield/Retaliation.
+--
+-- Note: "Guardian" was originally built and named "Cover" -- renamed after
+-- a follow-up session folded a lightweight Taunt mechanic into it (see
+-- Guardian.lua's own header). Older notes/commit messages referencing
+-- "Cover" mean this same skill.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 1. CURRENT STATUS OF EVERY MISC SKILL SLOT (const.Skills 24-38)
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- ID  Vanilla name     Status                          Implementation
+-- --  ---------------  ------------------------------  --------------------------------
+-- 24  Identify Item    BAKED IN (always succeeds)       Guardian.lua (events.CanIdentifyItem)
+--     -> slot reused   NEW SKILL: Guardian               Guardian.lua
+-- 25  Merchant         untouched (vanilla)              --
+-- 26  Repair Item      BAKED IN (always succeeds)       RepairBakeIn.lua (events.CanRepairItem)
+--     -> slot FREE     nothing assigned yet             --
+-- 27  Bodybuilding     untouched (vanilla)              --
+-- 28  Meditation       untouched (vanilla)               (donor for ManaShield's mastery caps)
+-- 29  Perception       untouched (vanilla), ALSO now     PerceptionDisarmTraps.lua
+--                      backs Disarm Traps (see 31)
+-- 30  Regeneration     untouched (vanilla)               --
+-- 31  Disarm Traps     MERGED into Perception (29)       PerceptionDisarmTraps.lua (events.GetSkill redirect)
+--     -> slot FREE     nothing assigned yet              --
+-- 32  Dodging          untouched (vanilla)               --
+-- 33  Unarmed          untouched (vanilla)               --
+-- 34  Identify Monster MERGED into best spell school      ManaShield.lua (events.GetSkill redirect)
+--     -> slot reused   NEW SKILL: Mana Shield            ManaShield.lua
+-- 35  Armsmaster       untouched (vanilla)                (donor for Cleave's and Retaliation's mastery caps)
+-- 36  Stealing         REPLACED entirely                  Cleave.lua
+--     -> slot reused   NEW SKILL: Cleave                 Cleave.lua
+-- 37  Alchemy          untouched (vanilla)                --
+-- 38  Learning         own effect NORMALIZED (see below)  Learning.lua
+--     -> slot reused   NEW SKILL: Retaliation             Retaliation.lua
+--
+-- Also: Human's racial auto-grant of 1 point in Learning (Data/Tables/
+-- Race Skills.txt, was "B/1/4/0/1" in the Learning column) was removed --
+-- it doesn't make sense to auto-grant "Retaliation" at character creation
+-- just because that slot used to be Learning. Changed to "-" (no bonus),
+-- matching every other cell in Human's row. No other race or class had a
+-- similar auto-grant for this skill; checked and confirmed via
+-- Scripts/Structs/RacialSkills.lua's own table parser before editing.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 2. THREE PATTERNS FOR CHANGING A SKILL'S FUNCTION
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- [PATTERN A] Bake in a pass/fail skill as always-succeeding (Identify Item,
+-- Repair Item). Only works when the skill's entire gameplay effect is a
+-- single documented pass/fail event this project already installed --
+-- check first (grep for "Can<X>" in Scripts/General/ExtraEvents.lua and
+-- similar). Frees the slot completely, no leftover semantics to redirect:
+--   function events.CanIdentifyItem(t)
+--       t.CanIdentify = true
+--   end
+-- Before assuming a skill is this simple, grep the whole project for the
+-- skill constant (const.Skills.X) to make sure there's no OTHER gameplay
+-- effect hiding elsewhere (Learning looked like it might be this simple but
+-- wasn't -- see Pattern C's caveat below).
+--
+-- [PATTERN B] Repurpose the slot for a genuinely new, independently
+-- trainable skill (Cleave on Stealing, Guardian on Identify Item, Mana
+-- Shield on Identify Monster, Retaliation on Learning). The full template,
+-- proven four times now:
+--   1. events.GameInitialized2(): Game.SkillNames[SLOT] = "New Name",
+--      set Game.SkillDescriptions/SkillDesNormal/SkillDesExpert/
+--      SkillDesMaster/SkillDesGM[SLOT], grant access to every class (see
+--      the mastery-cap donor note below), don't bother with the "show in
+--      skill screen" ASM patch Cleave.lua carries over from Stealing.lua.
+--      disabled UNLESS the donor skill has the same display quirk (it's
+--      Stealing-specific; every skill repurposed so far has NOT needed it).
+--   2. events.PopulateLearnSkillsDialog: add SLOT to Training halls'
+--      teachable list (or wherever thematically fits).
+--   3. Mastery: auto-promote from raw skill level via a dedicated
+--      SyncXMastery(player) function (reads/writes player.Skills[SLOT]
+--      directly -- a raw memory array, confirmed independent of any
+--      GetSkill hook, see 00 structs.lua's array(39).i2 'Skills' field),
+--      called from events.GetSkill when t.Skill==SLOT. Thresholds
+--      1/4/7/10 -> Normal/Expert/Master/GM, matching Cleave.lua's own
+--      convention (used in preference to MAW's own suggested Cover/Guardian
+--      thresholds of 6/12/20 -- consistency with this project's other
+--      repurposed skills mattered more than matching MAW's tuning).
+--      ALWAYS decode/encode the raw value with the project's own
+--      SplitSkill(val) -> (level, mastery) and JoinSkill(level, mastery)
+--      globals (Scripts/Structs/After/Functions.lua) -- do NOT hand-roll
+--      bit.band/bit.lshift on a made-up MASTERY_MASK. See gotcha #1 below;
+--      this exact template:
+--        local function SyncXMastery(player)
+--            local stored = player.Skills[SLOT]
+--            if not stored or stored == 0 then return nil, 0 end
+--            local level, curMastery = SplitSkill(stored)
+--            if level < 1 then return nil, 0 end
+--            local expected = MasteryFromLevel(level)
+--            -- (class cap check here)
+--            if curMastery ~= expected then
+--                player.Skills[SLOT] = JoinSkill(level, expected)
+--            end
+--            return expected, level
+--        end
+--        function events.GetSkill(t)
+--            if t.Player and t.Skill == SLOT then
+--                local mastery = SyncXMastery(t.Player)
+--                if mastery then
+--                    local lvl, curMas = SplitSkill(t.Result)
+--                    if mastery > curMas then t.Result = JoinSkill(lvl, mastery) end
+--                end
+--            end
+--        end
+--   4. Per-class mastery caps: do NOT just grant "Normal to everyone with
+--      zero access" and stop there -- the slot inherits the DONOR skill's
+--      original per-class distribution, which is often thematically wrong
+--      for the new skill (confirmed bug: Knight capped at Normal for
+--      Guardian because Identify Item's own class table gives Knights zero
+--      access; Identify Item is a scholarly/merchant skill, Knights aren't
+--      rated on it). Instead mirror a DIFFERENT, thematically-fitting
+--      existing skill's per-class caps wholesale:
+--          skills[SLOT] = math.max(skills[const.Skills.DonorSkill], 1)
+--      (the math.max floor of 1 keeps it learnable by every class even if
+--      the donor skill has zero access for some of them). Donors used so
+--      far: Guardian -> Shield (defensive), Mana Shield -> Meditation
+--      (mana-management), Retaliation -> Armsmaster (melee prowess).
+--      Pick whatever's thematically closest for the next one.
+--   5. The actual mechanic: write it for THIS project's own damage/stat
+--      formulas, don't try to port MAW's version wholesale unless it's
+--      genuinely self-contained (Guardian's redirect mechanic was; Mana
+--      Shield's and Retaliation's damage formulas were NOT, since MAW's
+--      versions depend on calcPowerVitality() and their full
+--      CalcDamageToPlayer rewrite, neither of which exist here -- see
+--      StatRemix.lua's header for the same situation with the Luck floor
+--      and spell damage).
+--
+-- [PATTERN C] Merge/redirect one skill into another's value (Identify
+-- Monster -> best spell school, Disarm Traps -> Perception). Use when a
+-- skill's native effect should survive but doesn't need its own dedicated
+-- training/slot:
+--   function events.GetSkill(t)
+--       if t.Skill ~= const.Skills.OldSkill or not t.Player then return end
+--       t.Result = t.Player.Skills[const.Skills.NewSourceSkill]
+--       -- or a derived value, e.g. ManaShield.lua's "highest of 7 schools"
+--   end
+-- CRITICAL CAVEAT, discovered via a real back-and-forth this session:
+-- Pattern C and Pattern B CANNOT coexist on the same slot. events.GetSkill
+-- has no way to distinguish "native code asking about the OLD skill's
+-- native effect" from "training UI/character sheet asking about a NEW
+-- skill now occupying that slot" -- both arrive as the same t.Skill==SLOT
+-- with no other context. Applying Pattern C's redirect unconditionally
+-- would make a Pattern-B skill on the same slot display/train using the
+-- WRONG value. If a slot needs Pattern C's redirect, leave it otherwise
+-- free (Pattern C alone, no new trainable skill on it) -- this is why
+-- Disarm Traps (31) and, before Mana Shield claimed it, would-be conflicts
+-- on Identify Monster (34) are handled as pure redirects with the slot's
+-- OWN raw storage repurposed separately for the new skill's mastery
+-- tracking (works because raw player.Skills[N] reads bypass GetSkill
+-- entirely -- only the native function-call path native UI/training uses
+-- goes through the hook). This means a Pattern-B skill built on top of a
+-- Pattern-C-redirected slot (as Mana Shield is, on Identify Monster) has
+-- an UNVERIFIED risk: the character sheet's own display of "Mana Shield"
+-- and the training-hall's "cost to train further" calculation likely also
+-- go through the same hooked GetSkill function as native Identify-Monster
+-- checks do, and would show the spell-school-derived number instead of
+-- Mana Shield's real trained level. Not a crash -- the actual mechanic
+-- (ManaShield.lua's CalcDamageToPlayer hook) reads raw storage directly
+-- and is unaffected -- but worth checking live before assuming it's fine.
+-- If it IS confusing in practice, narrow the override (e.g. only apply the
+-- spell-school substitution when the slot's own raw level is still 0)
+-- rather than re-architecting.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 3. GOTCHAS FOUND THIS SESSION, WORTH NOT REPEATING
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- - MOST IMPORTANT, found during a later double-check pass: the raw skill
+--   value is NOT a clean bitfield with mastery living at some fixed bit
+--   offset. It's LEVEL + an ADDITIVE MASTERY OFFSET (Expert +0x40,
+--   Master +0x80, GM +0x100 on mm8), decoded by magnitude comparison, not
+--   by masking a bit range. This project already provides the correct
+--   codec as globals: SplitSkill(val) -> (level, mastery 0-4) and
+--   JoinSkill(level, mastery) -> val (both in
+--   Scripts/Structs/After/Functions.lua, used correctly all over the rest
+--   of the codebase -- RacialSkills.lua, ExtraArtifacts.lua,
+--   GlobalEventsNewHandler.lua). Cleave.lua, Guardian.lua, ManaShield.lua,
+--   Retaliation.lua, and SkillHarmony.lua were ALL originally written with
+--   a hand-rolled scheme instead (MASTERY_MASK = 0x3C00, mastery packed at
+--   bit 10 via bit.lshift(mastery-1, 10)) -- a constant that, when
+--   grepped, appeared nowhere else in the entire project, which is what
+--   gave the bug away. Consequence: since 0x400/0x800/0xC00 (the values
+--   this scheme wrote for Expert/Master/GM) are all >= 0x100, SplitSkill
+--   would decode ALL THREE as mastery 4 (GM) the instant a character's
+--   skill level crossed the Expert threshold (level 4) -- Expert and
+--   Master mastery were functionally unreachable; every one of these
+--   skills jumped straight to full GM behavior at level 4. Worse,
+--   SkillHarmony.lua applies the same write to every skill in the game
+--   (0-38, not just the repurposed ones) and is on by default, so this
+--   was a game-wide bug, not confined to the four new skills. Fixed by
+--   replacing all of it with SplitSkill/JoinSkill (see Pattern B's
+--   template above, now corrected). Skill LEVEL was never affected by
+--   this bug (bit.band(stored,0x3F) and SplitSkill's val%0x40 happen to
+--   agree on level extraction since the wrong offsets were multiples of
+--   64) -- only mastery tier was wrong, which is why it wasn't obvious
+--   from a quick smoke test at low character levels.
+--
+-- - GetSkill hooks must be gated behind their own Game.XEnabled toggle for
+--   their ENTIRE body, not just part of it. Found and fixed a bug in
+--   ManaShield.lua where the mastery-sync call was gated but the
+--   spell-school override to t.Result wasn't -- meaning disabling the
+--   feature didn't actually disable the Identify-Monster-via-magic-school
+--   behavior. Check the whole function is behind the toggle, not just the
+--   part that "does the interesting work".
+--
+-- - player:GetXTotalSkill() methods (GetLearningTotalSkill,
+--   GetPerceptionTotalSkill, GetMerchantTotalSkill, GetDisarmTrapTotalSkill
+--   -- all defined via SimplePlayerHook in Scripts/Core/events.lua) return
+--   a plain bonus-inclusive aggregate number, NOT the packed level+mastery
+--   format that events.GetSkill's t.Result and player.Skills[N] use
+--   (decode/encode with SplitSkill/JoinSkill, see gotcha #1 above -- it's
+--   an additive offset, not a bitfield). Do not substitute one for the other in a
+--   Pattern C redirect -- confirmed this before it became a live bug by
+--   checking the documented t.Result format against these methods'
+--   naming convention (no usage example existed in this project to check
+--   directly, but the format mismatch was clear enough not to risk it).
+--
+-- - A skill can look Pattern-A-simple (single pass/fail hook) and not be --
+--   Learning looked like it might reduce to one CanX-style check, but
+--   Scripts/General/Learning.lua turned out to directly patch native
+--   training-time assembly (reading player.Skills[Learning] inline via
+--   SplitSkill in two places) AND had a second, separate XP-boost ASM
+--   patch. Always grep the whole project for the skill constant before
+--   assuming Pattern A applies; Learning ended up needing its own
+--   dedicated normalization (hardcode the training-time formula to always
+--   use GM-equivalent mastery, drop the XP-boost patch entirely) rather
+--   than a simple bake-in.
+--
+-- - Before repurposing ANY slot, grep Data/Tables/*.txt (Race Skills.txt,
+--   Class Skills.txt, Class Starting Skills.txt, ItemsExtra.txt/
+--   ExtraArtifacts.lua for item bonuses) for the skill constant. Race/
+--   class tables can have auto-grant entries (Human's Learning bonus) that
+--   silently carry over as "auto-grant of the NEW skill" if not caught;
+--   item bonuses targeting the old skill (several +Disarm Traps artifacts
+--   found in ExtraArtifacts.lua) just go inert once redirected/repurposed
+--   -- not a bug, but worth knowing they're there rather than being
+--   surprised later.
+--
+-- - Don't blindly carry over a donor skill's ASM display patch. Cleave.lua
+--   carries a "show <skill> in character skills screen" ASM patch from the
+--   original (disabled) Scripts/General/Stealing.lua.disabled, hardcoded
+--   to compare against Stealing's own skill ID (0x24). Reading that
+--   original file's comment confirmed it fixes a Stealing-specific display
+--   quirk, not a generic requirement -- Guardian/Mana Shield/Retaliation
+--   all skip it and (as far as tested) display fine without it. If a
+--   future repurposed skill doesn't show up correctly in the skill list,
+--   THAT'S the mechanism to look at, not something to preemptively copy in.
+--
+-- - When renaming an already-shipped repurposed skill (Cover -> Guardian),
+--   grep the WHOLE project for the old name, not just the skill's own file
+--   -- other skills that reference it (Retaliation.lua reads Guardian.lua's
+--   vars.justGuarded marker), both reference docs, and the user-facing
+--   changelog/README all need the same rename. A skill name isn't
+--   self-contained to its own file once other systems hook into its
+--   side-effects.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 4. THE SKILLZ.DLL DETOUR (why Pattern B exists instead of new skill slots)
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- Guardian (then named Cover) was originally attempted as a genuinely new
+-- skill slot (beyond the vanilla hardcoded count) using
+-- Malekitsu/Maw-Mod-MMMerge's Skillz.dll -- MAW's own way of doing this, a
+-- compiled binary with no public source, wrapped by a thin Lua layer
+-- (Scripts/Structs/00Skillz.lua in MAW's repo). After copying the DLL in
+-- and fixing every missing-dependency error it surfaced (a missing
+-- Data/Tables/Race Skillz.txt, a missing cave_api.dll, both copied from
+-- MAW's repo), it still crashed unrecoverably -- silently, no error
+-- message, nothing in either MMMergeLog.txt or MMExtensionLog.txt --
+-- specifically when actually training a skill through it. This is exactly
+-- the risk that was flagged before attempting it (an unverifiable compiled
+-- binary, no source to debug against, no way to confirm it matches this
+-- project's exact build) materializing in practice. Fully reverted (DLL,
+-- wrapper module, the added data table all removed) in favor of Pattern B
+-- above, which achieves the same "new trainable skill" outcome using only
+-- proven, already-present Lua-level hooks. See Guardian.lua's own header
+-- for the blow-by-blow.
+--
+-- Lesson: repurposing an EXISTING vanilla skill slot is far lower risk than
+-- trying to add genuinely new ones. This project apparently has 15 "Misc"
+-- category skills (24-38, see the table in section 1) as a deep pool of
+-- slots to repurpose before genuinely running out.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 5. TAUNT BAKE-IN (Guardian, follow-up session)
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- A separate "Taunt" skill was considered (drawing monster aggro onto a
+-- character, the inverse of Guardian's reactive intercept) but rejected in
+-- favor of folding a lightweight version into Guardian itself, rather than
+-- spending a 5th skill slot on a mechanic that's thematically a subset of
+-- what Guardian already does. Implementation: landing a melee hit grants a
+-- mastery-scaled bonus (Normal +5%, Expert +10%, Master +15%, GM +20%,
+-- see TAUNT_BONUS_BY_MASTERY in Guardian.lua) to that character's next
+-- intercept roll -- this generalizes what used to be a GM-only +15% one-
+-- shot bonus into a per-tier mechanic active at every mastery level, reused
+-- from the exact same CalcDamageToMonster/PlayerAttacked hooks Guardian
+-- already had, no new native hook needed.
+--
+-- This is explicitly the "reactive odds bump" version of Taunt, not a real
+-- pre-emptive one -- it doesn't change which party member a monster picks
+-- as its FIRST target, only Guardian's own chance to intercept afterward.
+-- A "real" Taunt (biasing initial monster target selection) would need a
+-- new, currently-undiscovered native hook into monster AI targeting --
+-- worth a future investigation pass if the baked-in version doesn't feel
+-- assertive enough in practice, but deliberately not attempted yet since
+-- it's unproven territory (same category of risk as the abandoned
+-- Skillz.dll attempt, just a different subsystem).

@@ -1,0 +1,408 @@
+-- MAW Mod Reference (Might and Magic 8 merge edition)
+-- Source: https://github.com/Malekitsu/Maw-Mod-MMMerge
+-- This file is a reference document, NOT a functional script (.disabled so it
+-- won't load). It captures architecture patterns and implementation approaches
+-- from the MAW mod for future reference when designing stat/skill/damage changes.
+--
+-- Key patterns are marked with [PATTERN] and can be reused safely.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 0. METHODOLOGY -- READ THIS FIRST
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- MAW has already solved a lot of the hard problems here (stat tooltips,
+-- weapon/spell damage ranges, Luck-style mechanics, per-stat info boxes).
+-- Before reinventing something non-trivial, check whether MAW already built
+-- it -- multiple features this session (see Sections 2 and 4) only became
+-- reliable after going back to MAW's actual source instead of guessing.
+--
+-- [PATTERN] Pulling the real source instead of trusting paraphrased notes:
+--   Earlier entries in this file (from a previous session) turned out to be
+--   WRONG in places -- they described OUR OWN codebase's mechanisms
+--   (RightClickTooltip, the 0x41CA3F hook) as if they were MAW's, which sent
+--   a later session down a dead end for several turns chasing a mechanism
+--   MAW doesn't actually use. The fix was to clone MAW's repo directly and
+--   grep the real source:
+--     curl -sL https://github.com/Malekitsu/Maw-Mod-MMMerge/archive/refs/heads/main.tar.gz -o maw.tar.gz
+--     tar -xzf maw.tar.gz --strip-components=1 -C maw_repo
+--     grep -rn "<term>" maw_repo/Scripts/
+--   Do this whenever reusing a MAW pattern for anything beyond a quick
+--   sanity check -- paraphrased summaries (including the rest of this file)
+--   can drift from the real implementation. Verify, don't just cite.
+--
+-- [PATTERN] Verifying in-game before trusting a hook/formula, when you can't
+-- run the game yourself: add a throwaway diagnostic file (e.g.
+-- Scripts/General/zzDebugXxx.lua) that logs via Merge.Functions.LogError
+-- (guaranteed to pass the default LogLevel=2 filter) to MMMergeLog.txt, with
+-- Merge.Settings.Logging.ForceFlush = 1 in MMMergeSettings.lua temporarily so
+-- writes are visible without exiting the game. Delete the diagnostic and
+-- revert ForceFlush once confirmed. Ask for a FULL game relaunch (not just
+-- reloading a save or switching characters) after editing -- Scripts/General/
+-- and Scripts/Structs/ only load once at boot via RunFiles(), there is no
+-- hot-reload. If a syntax error is suspected, `npm install luaparse` and
+-- parse the file offline rather than guessing -- no Lua interpreter is
+-- available in this environment by default.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 1. MOD ARCHITECTURE
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- Load order (all in Scripts/General/):
+--   zz prefix = late-loading (overrides earlier files)
+--   Key files: zz_Maw-initialize.lua, zzMAW-Skills.lua, zzMaw-Stats.lua,
+--              zMaw-hooks.lua, zzMaw-Items.lua, zzMaw-Spells.lua, zzMaw-Monsters.lua
+--   zMaw-hooks.lua is NOT about stat/damage tooltips -- it's monster sprite
+--   scaling and movement-speed patches. Don't assume a "hooks" file name
+--   means it covers whatever hook you're looking for; grep the real content.
+--
+-- Settings: io.open / dofile to load MAWSettings.lua from game root.
+--   Different from our MenuExtraSettings approach (standard extra settings screen).
+--   Key settings: buffRework, restoreProjectiles, homingProjectiles, etc.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 2. STAT INFO BOX / TOOLTIP (verified against real source this session)
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- [PATTERN] Smooth stat curve (zzMaw-Stats.lua):
+--   function events.GetStatisticEffect(t)
+--       if t.Value >= 25 then
+--           t.Result = math.floor(t.Value / 5)
+--       end
+--   end
+--   - Below 25: native table preserved
+--   - 25+ : +1 per 5 points, matches native exactly at 25/30/35/40
+--   - Above 40: smoother than native (fills dead zones)
+--   - Used in: our StatRemix.lua (confirmed working)
+--
+-- [PATTERN] The REAL per-stat info box mechanism (Scripts/Structs/
+-- extraEditableDescriptions.lua, NOT zMaw-hooks.lua, NOT 0x41CA3F):
+--   mem.hookcall(0x417BA5, 2, 0, function(d, def, headerPtr, textPtr)
+--       local header, text = mem.string(headerPtr), mem.string(textPtr)
+--       local t = {Stat = u4[d.ebp - 8], Header = header, Text = text}
+--       t.Player = Party[Game.CurrentPlayer]
+--       events.call("BuildStatInformationBox", t)
+--       -- if t.Header/t.Text changed, realloc via mem.allocMM, call def()
+--       -- with the new pointers, then mem.freeMM() the temp buffer after
+--       -- def() returns
+--   end)
+--   - mem.hookcall intercepts a CALL instruction: gives you the call's own
+--     args (headerPtr, textPtr) and a `def` you can invoke to run the
+--     original call (optionally with modified args). Safer than mem.hook
+--     because it doesn't require you to reconstruct what the original
+--     instruction did.
+--   - t.Stat = u4[d.ebp - 8] (0=Might, 1=Intellect, 2=Personality,
+--     3=Endurance, 4=Accuracy, 5=Speed, 6=Luck; 7+ = HP/SP/AC/Resistances/etc,
+--     confirmed by MAW's events.BuildStatInformationBox handler in
+--     zzMaw-Stats.lua going up through t.Stat==18)
+--   - By the time this fires, native code has ALREADY built the correct
+--     header/text for the right stat and right player -- no screen or tab
+--     detection needed, no pixel calibration, no guessing which stat is
+--     under the mouse. This replaced an entire (broken) approach in our own
+--     StatTooltips.lua that tried to reconstruct "which stat is hovered" from
+--     Game.CurrentScreen + mouse Y-coordinates; that approach never reliably
+--     fired. Reading the native box's own already-correct state was both
+--     simpler and the only thing that actually worked.
+--   - Confirmed this address (0x417BA5) works unmodified in our own MM8
+--     build -- both projects share the same GOG MM8 + Rodril/MMMerge lineage.
+--   - Used in: our StatTooltips.lua.
+--
+-- [PATTERN] MAW's own BuildStatInformationBox handler (zzMaw-Stats.lua) adds
+-- per-stat bonus descriptions by REASSIGNING t.Text (not appending):
+--     if t.Stat==0 then -- Might
+--         t.Text = string.format("%s\n\nBonus Melee/Bow Damage: %s%%",
+--             Game.StatsDescriptions[0], might/10)
+--     end
+--   Game.StatsDescriptions[N] is the native flavor-text description for
+--   stat N -- MAW prepends it, then appends their own computed bonus lines.
+--
+-- [CORRECTION] Earlier notes in this file claimed a hook at 0x416817
+-- (events.Call("RightClickTooltip")) and a mem.hook at 0x41CA3F for stat
+-- tooltip text were MAW patterns. They are NOT -- grepping MAW's actual repo
+-- for "RightClickTooltip" and "0x416817" returns zero matches. Those two
+-- addresses are OUR OWN project's mechanisms (Scripts/Structs/After/
+-- InterfaceManager.lua's generic right-click hook, used for arbitrary
+-- overlay tooltips; and the native stat-popup TEXT-buffer hook used
+-- separately by CustomRaceClassNames.lua). MAW solves the same problem
+-- entirely differently (see the mem.hookcall pattern above) and doesn't use
+-- either address.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 3. SKILL SYSTEM (zzMAW-Skills.lua)
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- [PATTERN] Nuclear override of skill stat bonuses:
+--   function events.CalcStatBonusBySkills(t)
+--       t.Result = 0  -- wipes ALL native skill stat bonuses
+--   end
+--   Then MAW rebuilds everything from scratch using custom per-weapon tables:
+--     skillAttack, skillDamage, skillRecovery, skillAC, etc.
+--   Each has sub-tables per mastery: [Normal], [Expert], [Master], [GM]
+--   Auto-generates tooltips with tabular data.
+--   - WARNING: Completely replaces base game balance
+--   - Our approach: additive (t.Result = t.Result + bonus) instead of replacement
+--
+-- [PATTERN] Attack delay override (events.GetAttackDelay):
+--   t.Result = 100 initially
+--   Rebuild from custom baseRecovery table per weapon type
+--   Stores damageMultiplier[playerIndex]["Melee"/"Ranged"] ratio
+--   Speed stat adds haste: speedEffect = speed>21 and floor(speed/10) or (speed-13)/4
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 4. DAMAGE SYSTEM -- weapon/spell ranges, Luck floor (verified this session)
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- [PATTERN] Physical damage reduction (zzMaw-Stats.lua):
+--   local divider = math.min(90 + monLvl * 0.25 * bolster)
+--   local reduction = AC / divider + 1
+--   damage = round(damage / reduction)
+--
+-- [PATTERN] Magical damage reduction:
+--   Same pattern but based on totalRes / divider + 1
+--   Where totalRes is the player's relevant resistance
+--
+-- [PATTERN] CalcDamageToMonster complete override:
+--   t.Result = damage * (dmgMult or 1)
+--   Where dmgMult comes from damageMultiplier[playerIndex][type]
+--   (stored by GetAttackDelay handler, scales damage with attack speed)
+--
+-- [PATTERN] Crit system:
+--   function getCritInfo(pl, dmgType, monLvl)
+--       local luck = pl:GetLuck() or 0
+--       local totalCrit = luck / math.min((500 + monLvl*7.5), 5000) + 0.05
+--       -- base 5% + luck contribution that diminishes with monster level
+--   end
+--
+-- [PATTERN] Getting a player's real weapon damage min/max (from MAW's
+-- zzMaw-Stats.lua): pl:GetMeleeDamageMin(), pl:GetMeleeDamageMax(),
+-- pl:GetRangedDamageMin(), pl:GetRangedDamageMax(). These are real,
+-- documented native Player methods (structs.Player.GetMeleeDamageMin/Max/
+-- GetRangedDamageMin/Max in MMExtension.htm), not MAW-specific -- MAW is
+-- just using standard API. Confirmed via live logging this session to match
+-- the character sheet's "Damage" line exactly (a 2H sword showing 6-18 on
+-- the sheet returned exactly 6 and 18 from these methods).
+--   - This matters because reconstructing the range from raw ItemsTxt fields
+--     (Mod1DiceCount/Mod1DiceSides/Bonus) only gives the WEAPON's own dice
+--     (confirmed to give 4-16 for the same sword) -- it's missing whatever
+--     flat bonus comes from skills/Might/etc, which these aggregate methods
+--     already include. Use the Get*DamageMin/Max methods, not raw item dice
+--     fields, when you need the number that matches what's displayed.
+--   - No equivalent convenience method exists for spell damage -- MAW's own
+--     spell damage system (zzMaw-Spells.lua) is a full bespoke rewrite with
+--     custom per-spell dice tables (spellPowers[spellId]), mastery scaling,
+--     and class-specific mechanics (e.g. elementalistClass ascension stacks)
+--     that isn't portable in small pieces. If you need spell damage min/max,
+--     either budget for reading their whole spellPowers table as a reference
+--     (not copying it wholesale, formulas differ project to project) or use
+--     the (less accurate) native Game.Spells[spell].DamageDiceSides/DamageAdd
+--     with skill-as-dice-count as a cheap approximation.
+--
+-- [PITFALL -- CONFIRMED BUG THIS SESSION] events.CalcSpellDamage fires for
+-- BOTH player-cast spells hitting monsters AND monster/object-cast spells
+-- hitting the party -- there is no player reference in its `t` table at all.
+-- Our own SpellsExtra.lua already has infrastructure for this
+-- (MO.CalcSpellDamageCaster, written from multiple different native call
+-- sites -- damageMonsterFromParty, DamagePlayerFromObjAny,
+-- DamageMonsterFromEvent -- and read back via
+-- t.CasterType = bit.band(u4[MO.CalcSpellDamageCaster], 7),
+-- t.CasterIndex = bit.arshift(u4[MO.CalcSpellDamageCaster], 3)), but the
+-- exact CasterType values for "player cast at monster" vs "monster cast at
+-- player" were not verified in-game before this file was written. Do NOT
+-- assume Game.CurrentPlayer being a valid index means a spell was
+-- player-cast -- it just means some character is currently selected in the
+-- UI, which is true almost always regardless of who cast the spell. Verify
+-- the CasterType encoding empirically (see the diagnostic-logging pattern in
+-- Section 0) before building anything on events.CalcSpellDamage that should
+-- only apply to player casts.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 5. EVENT REFERENCE
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- GetStatisticEffect (events.lua:1994):
+--   t = { Value = val, Result = def(val) }
+--   fires for ALL 7 core attributes (Might, Int, Pers, End, Acc, Spd, Luck)
+--   t.Value is the raw stat value, t.Result is the effect value
+--   CANNOT differentiate which stat is being calculated
+--
+-- CalcStatBonusBySkills (events.lua:1887):
+--   t = { Stat = stat (const.Stats), Result = def(this, stat) }
+--   t.PlayerIndex, t.Player = GetPlayer(this)
+--   MeleeAttack = 25, RangedAttack = 29 (MM7/8)
+--   t.Result is writable, MiscTweaks already hooks this for DragonAbility
+--
+-- CalcStatBonusByItems (events.lua:1848), CalcStatBonusByMagic (events.lua:1873):
+--   Sibling events to CalcStatBonusBySkills, same t.Stat/t.Result/t.Player
+--   shape. Each computes ONE contribution layer (items-only, magic-only) to
+--   a stat -- e.g. CalcStatBonusByItems.Result for MeleeDamageMax only
+--   reflects the weapon's own dice, not the full aggregate shown on the
+--   character sheet (confirmed: gave 16 for the same sword whose sheet shows
+--   18). Don't sum these three yourself to reconstruct an aggregate if a
+--   direct Get*() method already exists (see Section 4) -- summing risks
+--   missing a "base" contribution that isn't in any of the three layers.
+--
+-- CalcDamageToMonster (events.lua:2350):
+--   t = { DamageKind = kind, Damage = dmg (pre-defense), Result = def(...) (post-defense) }
+--   t.ByPlayer = bool, t.Melee = bool, t.PlayerIndex, t.Player = GetPlayer(aptr)
+--   t.MonsterIndex, t.Monster = GetMonster(mon)
+--   MM8-only: t.ByPlayer and t.Melee are set via d.ebp-0x8 and d.ebp-0x34
+--   t.ByPlayer IS reliable for distinguishing player vs monster attacker
+--   (unlike CalcSpellDamage, see Section 4 pitfall above).
+--   Known consumers in this project (as of this session): Cleave.lua,
+--   StatRemix.lua, Guardian.lua, Retaliation.lua, Scripts/Maps/BrBase.lua
+--   (aggro tracking, doesn't touch Result), Scripts/Maps/hive.lua
+--   (unconditionally overwrites Result for two specific monster IDs -- a
+--   boss/reactor fight with fixed random damage). Map-script handlers
+--   register when that map loads (dynamically, well after Scripts/General/*
+--   registers at boot), so they always run AFTER General-scope handlers in
+--   the chain -- General-scope math gets computed first, then any
+--   map-specific override wins. Multiple handlers on this event compose in
+--   FILE LOAD ORDER (alphabetical within General/), not in some fixed
+--   priority -- if two General-scope files both need to see each other's
+--   t.Result changes, check load order, don't assume it.
+--
+-- GetSkill (events.lua:1899):
+--   t = { Skill = skill (const.Skills), Result = def(this, skill) }
+--   t.PlayerIndex, t.Player = GetPlayer(this)
+--   t.Result: packed level+mastery, decode with SplitSkill(t.Result) ->
+--   (level, mastery 0-4), encode with JoinSkill(level, mastery). NOT a
+--   clean bitfield -- mastery is an additive offset (Expert +0x40,
+--   Master +0x80, GM +0x100 on mm8), and SplitSkill/JoinSkill (defined in
+--   Scripts/Structs/After/Functions.lua) are the only correct way to
+--   read/write it. An earlier version of this doc claimed a "bits 10-11"
+--   mastery bitfield -- that was wrong and had corrupted mastery sync in
+--   Cleave/Guardian/ManaShield/Retaliation/SkillHarmony until caught and
+--   fixed (see zzSkillSlots-Reference.lua.disabled section 3 for the
+--   full story). Always use SplitSkill/JoinSkill, never hand-rolled
+--   bit.band/bit.lshift on the raw skill value.
+--   Known consumers (as of this session): Cleave.lua, Guardian.lua,
+--   ManaShield.lua, Retaliation.lua (all auto-promote mastery from raw
+--   level via this hook), PerceptionDisarmTraps.lua and ManaShield.lua
+--   (redirect one skill's queried value to a different skill's). See
+--   zzSkillSlots-Reference.lua.disabled for the full pattern writeup and
+--   the discovered constraint that a single slot can't do both at once.
+--
+-- See also zzSkillSlots-Reference.lua.disabled: a dedicated reference for
+-- the skill-slot repurposing system (Guardian/Mana Shield/Retaliation/Cleave,
+-- plus the Identify Item/Repair Item bake-ins and the Disarm Traps->
+-- Perception merge). That file covers the three reusable patterns and their
+-- gotchas in depth; this file stays focused on MAW-sourced patterns and
+-- native event shapes.
+--
+-- RightClickTooltip (InterfaceManager.lua:1014) -- OUR mechanism, not MAW's:
+--   mem.autohook2(0x416817) fires events.Call("RightClickTooltip") on every
+--   right click, ANYWHERE in the game (not screen-specific). No arguments
+--   passed; handler must independently determine Game.CurrentScreen /
+--   Game.CurrentCharScreen / mouse position itself. The autohook2 wrapper at
+--   this address does NOT propagate a handler's return value back to skip
+--   the native code (it calls events.Call and discards the result) --
+--   despite what "return true to skip original" style comments elsewhere
+--   might suggest, THIS specific installation cannot suppress the native
+--   popup. Good for drawing an ADDITIVE overlay (CustomUI.ShowTooltip/
+--   DisplayTooltip) on top of whatever's already showing; bad for anything
+--   needing to know exactly which UI element was clicked -- that requires
+--   reconstructing screen/tab/pixel state yourself, which is fragile (this
+--   was the broken approach a previous StatTooltips.lua attempt took before
+--   switching to Section 2's mem.hookcall pattern instead).
+--
+-- OpenExtraSettingsMenu:
+--   Fired when extra settings menu opens. Used to sync UI state.
+--   NOTE: Two definitions in MenuExtraSettings.lua overwrite each other.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 6. TOOLTIP DISPLAY
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- CustomUI.ShowTooltip(Text, X, Y, Width, Font, unk1, unk2, unk3):
+--   Calls native 0x414a61 to render a tooltip overlay.
+--   One-frame only (must be called each frame to remain visible).
+--   Font defaults to Game.Lucida_fnt.
+--   unk1-3 default to 0.
+--
+-- CustomUI.DisplayTooltip(Text, Timeout, X, Y, Width, Screen, Font):
+--   Creates a CustomUI text widget that calls ShowTooltip each frame.
+--   Dismisses on left-click or timeout.
+--   Screen defaults to Game.CurrentScreen.
+--   Width defaults to 320.
+--   Timeout is in whole seconds (compared against os.time()), default 8.
+--
+-- Game.TextBuffer2 (0x5E1020, 2000-byte buffer):
+--   Holds the text for the native right-click stat tooltip popup.
+--   Set by the native function at 0x41CA3F.
+--   Can be overridden via mem.hook(0x41CA3F, ...) to change tooltip text.
+--   This is a DIFFERENT mechanism from Section 2's mem.hookcall(0x417BA5,...)
+--   -- don't conflate the two. 0x41CA3F is used by CustomRaceClassNames.lua
+--   in this project; 0x417BA5 is what StatTooltips.lua uses. They may be
+--   related native functions but were not confirmed to be the same call.
+--
+-- Mouse position:
+--   Game.Mouse:GetPos() returns (mx, my).
+--   Screen is 640x480 native.
+--
+-- Player struct stat fields:
+--   Player.MightBase, Player.MightBonus, etc. (confirmed for all 7 core
+--   attributes: Might/Intellect/Personality/Endurance/Accuracy/Speed/Luck).
+--   Base + Bonus = total effective stat value. Always index Party[playerIdx]
+--   to get the actual Player struct -- Game.CurrentPlayer alone is just a
+--   number (the index), not the struct; indexing a number field on it will
+--   silently produce nil, not an error, which can hide the bug for a while.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 7. COMPATIBILITY NOTES
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- MAW vs our mods:
+-- - Both use GetStatisticEffect with if val>=25 then floor(val/5) — compatible
+-- - MAW wipes CalcStatBonusBySkills (t.Result=0) — incompatible with additive
+--   approach (would zero out our Accuracy weight). Must choose one or the other.
+-- - MAW completely overrides CalcDamageToMonster — incompatible with our Luck
+--   floor approach if both were active at once. Must choose one.
+-- - MAW's tooltips replace native entirely; ours (StatTooltips.lua) append to
+--   the native text via the same mem.hookcall(0x417BA5,...) mechanism MAW
+--   uses, so both COULD coexist on that specific hook if both projects were
+--   ever merged, though nothing else in this project currently overlaps.
+--
+-- Key difference in philosophy:
+--   MAW = nuclear replacement (wipe and rebuild everything)
+--   Ours = additive improvements (preserve native, add on top)
+--   This means MAW and our mods are mutually exclusive for stat/skill/damage
+--   if installed together, but MAW's *source* is still a good reference for
+--   finding correct hook points and native API even when we implement things
+--   additively instead of replacing them.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 8. STAT TEXT COLORING VIA GlobalTxt \f ESCAPE CODES (zzStatColors.lua)
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- [PATTERN] Text coloring without native hooks:
+--   MMExtension's text renderer natively processes \fXXXXX color escape codes
+--   where XXXXX is a 5-digit decimal 16-bit color value (RGB565 or RGB555).
+--   \f0xFFFF = white, \f63488 = red (0xF800), etc.
+--   Inject these at the START of a GlobalTxt entry to color all text rendered
+--   using that entry. Works in ANY text context (Stats tab, tooltips, dialogs,
+--   menus) because the rendering engine handles \f regardless of caller.
+--
+-- [PATTERN] Implementation (zzStatColors.lua):
+--   function events.L2InterfaceUpd()
+--       if on Stats tab then
+--           Game.GlobalTxt[144] = string.format("\f%.5d%s", 0xF800, "Might")
+--       end
+--   end
+--   - L2InterfaceUpd fires every frame unconditionally
+--   - On Stats tab: inject \f codes into stat GlobalTxt entries
+--   - On leaving tab: restore originals
+--   - Toggle: Game.StatColorsEnabled
+--
+-- [PATTERN] Color values in GlobalTxt dump:
+--   Use Game.GlobalTxt[i] to read entries (0-indexed, size 750).
+--   To dump all: for i=0,749 do print(i.." = "..(Game.GlobalTxt[i]or"")) end
+--
+-- [KEY INSIGHT] Why this works without mem.hook or asmpatch:
+--   \f escape codes are processed INSIDE the native DrawText function itself
+--   (which MMExtension patches). No INT3 breakpoints, no stack manipulation,
+--   no crash risk. The only cost is per-frame string replacement for 15+
+--   GlobalTxt entries, which is negligible.
+--
+-- [KEY INSIGHT] Limitation: hardcoded labels
+--   Some stat labels (Armor Class, Spirit Resistance) are NOT in GlobalTxt.
+--   They are hardcoded in the game's rendering code and cannot be colored
+--   via this method — would need a binary patch or DrawText hook instead.
