@@ -10,114 +10,41 @@
 
 1. **Back up your save files** (`Saves/` directory in your game folder).
 
-2. **Copy the entire `Scripts/` and `Data/` directories** from this package
-   into your game root directory (where `MM8.exe` lives). When prompted,
-   **merge folders**, do not overwrite entire directories.
+2. **Copy `Scripts/` and `Data/`** from this package into your game root
+   directory (where `MM8.exe` lives). When prompted, **merge folders**.
 
-3. **Patch existing files** (see below).
+   **Important**: For `Scripts/General/MenuExtraSettings.lua` and
+   `Scripts/Core/timers.lua`, use the **Patched** versions provided in
+   this package:
 
-4. **Restart the game.** Open Extra Settings (gear icon on main screen) to
-   configure toggles.
+   ```
+   Scripts/General/Patched/MenuExtraSettings.lua  →  <GameDir>/Scripts/General/MenuExtraSettings.lua
+   Scripts/Core/Patched/timers.lua                 →  <GameDir>/Scripts/Core/timers.lua
+   ```
 
-## Patching Existing Files
+   All other files copy directly from their positions in the package.
 
-Two existing game files need small manual edits.
+3. **Restart the game.** Open Extra Settings (gear icon on main screen →
+   "Combat & Items" page) to configure toggles.
 
-### 1. `Scripts/General/MenuExtraSettings.lua`
+## What Gets Installed
 
-Add `"StatColorsEnabled"` to `VarsToStore` and its toggle on page 3.
-
-**Change 1** — Add to `VarsToStore` (line ~166):
-```lua
--- BEFORE:
-local VarsToStore = {"UseMonsterBolster", "BolsterAmount", ..., "TownPortalFullList"}
-
--- AFTER:
-local VarsToStore = {"UseMonsterBolster", "BolsterAmount", ..., "TownPortalFullList", "StatColorsEnabled"}
-```
-
-**Change 2** — Add toggle after the Town Portal toggle (after line ~324):
-```lua
-OnOffTumbler(ExSetScr3, 95, 405, VarsToStore[15])
-CustomUI.CreateText{
-    Text = "Colored Stat Text",
-    X = 140, Y = 405, Width = 400, Height = 16,
-    AlignLeft = true,
-    Screen = ExSetScr3
-}
-```
-
-**Change 3** — Add default in `LoadMapScripts` (near line ~408):
-```lua
-if ExSet.StatColorsEnabled == nil then
-    ExSet.StatColorsEnabled = true
-end
-```
-
-### 2. `Scripts/Core/timers.lua`
-
-Add a nil guard to prevent a rare crash.
-
-**Change** — At line ~100, before `timers[#timers+1] = ...`:
-```lua
-if not timers then timers = {} end
-```
-
-**Change** — At top of `RemoveTimer` (line ~177):
-```lua
-function RemoveTimer(f)
-    if not timers then return end
-    ...
-```
+| Location | Files |
+|----------|-------|
+| `Scripts/General/` | All `.lua` files from `Scripts/General/` |
+| `Scripts/General/MenuExtraSettings.lua` | Use the Patched version |
+| `Scripts/Core/timers.lua` | Use the Patched version |
+| `Scripts/Items/` | Item pools and design doc |
+| `Data/Tables/` | TownPortalCoords.txt, Resistances.txt, SpellsLearning.txt |
 
 ## Verifying Installation
 
-Open the Stats tab — stat labels should be colored. Open Extra Settings →
-"Combat & Items" page — toggles for Curated Item System and Colored Stat
-Text should appear.
+Launch the game and open Extra Settings (gear icon). You should see toggles
+for "Curated Item System" and "Colored Stat Text" on the "Combat & Items"
+page. Open the character Stats tab — stat labels should appear in their
+assigned colors.
 
 ## Uninstalling
 
-Delete all files listed below, revert the two patch edits above.
-
-## File Manifest
-
-### `Scripts/General/`
-| File | Purpose |
-|------|---------|
-| `zzXPDisplay.lua` | XP display on Stats tab |
-| `zzStatColors.lua` | Colored stat text |
-| `zzDumpGxt.lua` | GlobalTxt diagnostic tool |
-| `Cleave.lua` | Cleave skill (auto-retaliation) |
-| `Guardian.lua` | Guardian skill (intercept hits) |
-| `ItemSystem.lua` | Curated Item System core |
-| `ItemSystemDebug.lua` | Item System debug tools |
-| `ItemSystemDisplay.lua` | Item System UI overlays |
-| `ItemSystemTooltip.lua` | Item System tooltips |
-| `Learning.lua` | XP/Learning skill tweaks |
-| `ManaShield.lua` | Mana Shield skill |
-| `PartyWideStatLiquids.lua` | Party-wide potion effects |
-| `PerceptionDisarmTraps.lua` | Perception → Disarm merge |
-| `Regeneration.lua` | Smooth HP/SP regen |
-| `RepairBakeIn.lua` | Repair Item always-on |
-| `Resistances.lua` | Race/class resistance bonuses |
-| `Retaliation.lua` | Retaliation skill |
-| `SkillHarmony.lua` | Auto-mastery progression |
-| `SpellsLearning.lua` | Spell learning customization |
-| `StatRemix.lua` | Smoother stat curves |
-| `StatTooltips.lua` | Expanded stat tooltips |
-| `zzMAW-Reference.lua.disabled` | Developer reference (MAW patterns) |
-| `zzSkillSlots-Reference.lua.disabled` | Developer reference (slot usage) |
-
-### `Scripts/Items/`
-| File | Purpose |
-|------|---------|
-| `ItemPools.lua` | Curated prefix/suffix pools |
-| `README_ItemSystem.md` | Item System design doc |
-
-### `Data/Tables/`
-| File | Purpose |
-|------|---------|
-| `TownPortalCoords.txt` | Reserved teleport coordinates |
-| `Resistances.txt` | Race/class resistance data |
-| `SpellsLearning.txt` | Spell learning data |
+Delete all files copied from this package and restore the original
+`MenuExtraSettings.lua` and `timers.lua` from a backup.
