@@ -14,4 +14,13 @@ function events.CanRepairItem(t)
     t.CanRepair = true
 end
 
+-- Remove Repair from all learn dialogs — it always succeeds regardless of skill
+function events.PopulateLearnSkillsDialog(t)
+    for i = #t.Result, 1, -1 do
+        if t.Result[i] == const.Skills.Repair or t.Result[i] == const.Skills.RepairItem then
+            table.remove(t.Result, i)
+        end
+    end
+end
+
 MF.LogInit2(LogId)

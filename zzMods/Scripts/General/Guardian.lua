@@ -41,17 +41,13 @@
 -- 40%. Among successful rolls, whoever has the highest current HP takes
 -- the hit instead of the original target.
 --
--- Taunt (baked in, not a separate skill/slot): landing a melee hit grants a
--- flat bonus to this character's next Guardian roll, scaled by mastery
--- (Normal +5%, Expert +10%, Master +15%, GM +20%) instead of only at GM
--- like the original one-shot bonus. This is deliberately the "for now"
--- version of Taunt -- a passive threat bump riding the same proven
--- PlayerAttacked/CalcDamageToMonster hooks already used for the intercept
--- itself, rather than a real pre-emptive monster-targeting hook (unproven,
--- higher risk, not attempted). If a more assertive Taunt is wanted later
--- (biasing which party member a monster picks as its FIRST target, before
--- any Guardian roll happens at all), that needs its own native hook
--- discovery pass -- this bake-in only affects the reactive intercept odds.
+-- Taunt (baked in, not a separate skill/slot): influences the monster's
+-- INITIAL target selection (via MonsterChooseTargetPlayer). A guardian's
+-- mastery-scaled taunt weight (Normal +5%, Expert +10%, Master +15%,
+-- GM +20%) is rolled against a random check -- if it passes, the monster
+-- picks the guardian instead of whoever the natural targeting chose.
+-- This is SEPARATE from the intercept roll (PlayerAttacked), which
+-- redirects an already-chosen attack at the 40% base cap (no taunt).
 --
 -- Toggle: Extra Settings -> "Enable Guardian" (Game.GuardianEnabled,
 -- default true). Delete this file to remove the feature entirely (Identify
@@ -82,33 +78,20 @@ function events.GameInitialized2()
     Game.SkillNames[GUARDIAN_SKILL] = "Guardian"
 
     Game.SkillDescriptions[GUARDIAN_SKILL] =
-        "Guardian is a defensive skill enabling a character to shield allies by " ..
-        "intercepting incoming attacks meant for them, and to draw attention by " ..
-        "landing solid hits of their own. " ..
-        "Mastery improves automatically as skill level rises: " ..
-        "level 4 unlocks Expert, level 7 Master, level 10 Grandmaster. " ..
-        "Grants 10%% plus 1%% chance per skill point to intercept an attack meant " ..
-        "for an ally, up to 40%%. Landing a melee hit grants a taunt bonus to the " ..
-        "next intercept roll, scaling with mastery (Normal +5%%, Expert +10%%, " ..
-        "Master +15%%, GM +20%%). " ..
-        "Press P (on the Stats tab) to enable/disable guarding for this character."
+        "Guardian draws enemy attention with taunts and protects allies by " ..
+        "intercepting attacks. Press P to toggle."
 
     Game.SkillDesNormal[GUARDIAN_SKILL] =
-        "10%% plus 1%% chance per skill point (max 40%%) to intercept a " ..
-        "physical attack meant for another party member. Landing a melee hit " ..
-        "grants +5%% taunt bonus to the next intercept roll. " ..
-        "Unlocks Expert mastery at level 4."
+        "Taunt and intercept physical attacks. Unlocks Expert at level 4."
 
     Game.SkillDesExpert[GUARDIAN_SKILL] =
-        "Also able to intercept ranged/projectile attacks. Taunt bonus rises to +10%%. " ..
-        "Unlocks Master mastery at level 7."
+        "Intercept also works against ranged attacks. Unlocks Master at level 7."
 
     Game.SkillDesMaster[GUARDIAN_SKILL] =
-        "Also able to intercept a monster's special (usually spell) attack. " ..
-        "Taunt bonus rises to +15%%. Unlocks Grandmaster mastery at level 10."
+        "Intercept also works against special attacks. Unlocks Grandmaster at level 10."
 
     Game.SkillDesGM[GUARDIAN_SKILL] =
-        "Taunt bonus rises to +20%% on the next intercept roll after landing a melee hit."
+        "Maximum intercept effectiveness."
 
     -- Mirror Shield's per-class mastery caps onto Guardian instead of keeping
     -- Identify Item's -- Shield is thematically the closer fit (a defensive,
@@ -116,11 +99,25 @@ function events.GameInitialized2()
     -- tank/melee classes highly on it, unlike Identify Item (a scholarly/
     -- merchant skill Knights have zero access to in this project's own
     -- Class Skills.txt, which is why Knight capped at Normal before this).
+    -- Removed from non-durable classes. Barbarian and Minotaur granted M/G.
     local classCount = Game.Classes.Skills.count
     for classId = 0, classCount - 1 do
         local skills = Game.Classes.Skills[classId]
         if skills then
-            skills[GUARDIAN_SKILL] = math.max(skills[const.Skills.Shield], 1)
+            if (classId >= 0 and classId <= 7)          -- Archer line
+            or (classId >= 20 and classId <= 27)        -- Deerslayer line
+            or (classId >= 28 and classId <= 35)        -- Dragon line
+            or (classId >= 36 and classId <= 43)        -- Druid line
+            or (classId >= 76 and classId <= 83)        -- Ranger line
+            or (classId >= 108 and classId <= 119) then -- Sorcerer/Necro line
+                skills[GUARDIAN_SKILL] = 0
+            elseif classId >= 92 and classId <= 99 then -- Barbarian line
+                skills[GUARDIAN_SKILL] = (classId <= 93) and 3 or 4
+            elseif classId >= 52 and classId <= 59 then -- Minotaur line
+                skills[GUARDIAN_SKILL] = (classId <= 53) and 3 or 4
+            else
+                skills[GUARDIAN_SKILL] = math.max(skills[const.Skills.Shield] or 0, skills[const.Skills.Dodging] or 0)
+            end
         end
     end
 end
@@ -199,10 +196,6 @@ end
 function events.KeyDown(t)
     if not Game.GuardianEnabled then return end
     if t.Key ~= const.Keys.P then return end
-    if Game.CurrentScreen ~= const.Screens.Inventory or Game.CurrentCharScreen ~= const.CharScreens.Stats then
-        return
-    end
-
     EnsureGuardingTable()
     local index = Game.CurrentPlayer
     if index < 0 then return end
@@ -210,45 +203,45 @@ function events.KeyDown(t)
     Game.ShowStatusText(vars.guarding[index] and "Guardian Enabled" or "Guardian Disabled")
 end
 
--- ---------------------------------------------------------------------------
--- Taunt (baked in): landing a melee hit grants a mastery-scaled bonus to
--- this character's next Guardian intercept roll.
--- ---------------------------------------------------------------------------
-
 local TAUNT_BONUS_BY_MASTERY = {0.05, 0.10, 0.15, 0.20}  -- Normal, Expert, Master, GM
-
-local tauntBonus = {}
-
-local function FindPartySlot(player)
-    local id = player:GetIndex()
-    for i = 0, Party.High do
-        if Party[i]:GetIndex() == id then
-            return i
-        end
-    end
-    return nil
-end
-
-function events.CalcDamageToMonster(t)
-    if not Game.GuardianEnabled then return end
-    if not (t.ByPlayer and t.Melee and t.Player) then return end
-    if t.DamageKind ~= const.Damage.Phys then return end
-    if not t.Result or t.Result <= 0 then return end
-
-    local _, m = SplitSkill(t.Player.Skills[GUARDIAN_SKILL])
-    if m >= 1 then
-        local slot = FindPartySlot(t.Player)
-        if slot then
-            tauntBonus[slot] = TAUNT_BONUS_BY_MASTERY[m]
-        end
-    end
-end
 
 -- ---------------------------------------------------------------------------
 -- Combat: intercept an attack meant for another party member
 -- ---------------------------------------------------------------------------
+-- Taunt: influence the monster's INITIAL target selection.
+-- Fires after the weighted random pick but before the damage runs.
+-- If a guardian's taunt weight beats a random roll, override the target slot.
+-- ---------------------------------------------------------------------------
+
+function events.MonsterChooseTargetPlayer(t)
+    if not Game.GuardianEnabled then return end
+    EnsureGuardingTable()
+    local bestWeight, bestSlot = 0, -1
+    for i = 0, Party.High do
+        if vars.guarding[i] and Party[i]:IsConscious() then
+            local s, m = SplitSkill(Party[i].Skills[GUARDIAN_SKILL])
+            if s > 0 then
+                local taunt = m >= 1 and TAUNT_BONUS_BY_MASTERY[m] or 0
+                local w = 0.10 + s * 0.01 + taunt
+                if w > bestWeight then
+                    bestWeight, bestSlot = w, i
+                end
+            end
+        end
+    end
+    if bestSlot >= 0 and bestSlot ~= t.Slot and bestWeight > math.random() then
+        t.Slot = bestSlot
+        vars.justGuarded = vars.justGuarded or {}
+        vars.justGuarded[bestSlot] = true
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Intercept: if the monster targeted someone else, redirect the hit.
+-- ---------------------------------------------------------------------------
 
 function events.PlayerAttacked(t)
+    vars.lastGuardSlot = nil
     if not Game.GuardianEnabled then return end
     if not t.Attacker or not t.Attacker.Monster then return end
 
@@ -271,10 +264,6 @@ function events.PlayerAttacked(t)
             local s, m = SplitSkill(Party[i].Skills[GUARDIAN_SKILL])
             if s > 0 and m >= masteryRequired then
                 local chance = math.min(0.10 + s * 0.01, 0.40)
-                if tauntBonus[i] then
-                    chance = chance + tauntBonus[i]
-                    tauntBonus[i] = nil
-                end
                 if chance > math.random() and Party[i].HP > bestHP then
                     bestHP = Party[i].HP
                     bestIndex = i
@@ -296,6 +285,7 @@ function events.PlayerAttacked(t)
         -- installed -- just records that a guard happened, at this slot.
         vars.justGuarded = vars.justGuarded or {}
         vars.justGuarded[bestIndex] = true
+        vars.lastGuardSlot = bestIndex
     end
 end
 

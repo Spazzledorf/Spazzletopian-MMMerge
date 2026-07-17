@@ -3,12 +3,14 @@
 -- Scripts/General/Regeneration.lua
 -- =============================================================================
 -- Replaces the native lump-sum-per-minute regen with a smooth per-second
--- system that visually updates every ~100ms. Uses the same formulas as
--- MiscTweaks.lua's RegenTick handlers but subdivides the amounts so HP/SP
--- bars visibly rise in real time rather than jumping every game-minute.
+-- system that visually updates every ~100ms real time. Uses the same
+-- formulas as MiscTweaks.lua's RegenTick handlers but subdivides the
+-- amounts so HP/SP bars visibly rise in real time.
 --
 -- HOW IT WORKS:
---   A repeating Timer fires every `const.Second / 10` (~100ms game time).
+--   events.Tick fires every frame. A real-time guard (timeGetTime) limits
+--   regen application to once per 100ms of wall-clock time, so the rate is
+--   constant regardless of game speed or frame rate.
 --   Each tick reads the player's Regeneration and Meditation skills (which
 --   already include curated item bonuses via events.GetSkill), calculates
 --   the per-tick regen amount using the standard formulas, and applies it.
@@ -21,14 +23,15 @@ Log(Merge.Log.Info, "Init started: %s", LogId)
 
 local min = math.min
 local floor = math.floor
+local timeGetTime = timeGetTime  -- real-time millisecond counter (timers.lua)
 
 local accum = {}  -- fractional HP/SP accumulator, keyed by player pointer
-local INTERVAL
 local SUBDIVISIONS = 10
-local timerStarted = false
+local lastRT = 0  -- last real-time tick in ms (timeGetTime)
 
+-- Applies one tick of regen for all valid party members.
+-- Called from events.Tick when at least 100ms of real time has elapsed.
 local function RegenTick()
-    if Game.Paused or Game.MoveToMap.Defined then return end
     local ok, err = pcall(function()
     if not Party or not Party.count or Party.count < 1 then return end
     for i = 0, Party.count - 1 do
@@ -87,20 +90,26 @@ local function RegenTick()
     if not ok then
         Log(Merge.Log.Error, "%s: RegenTick error: %s", LogId, tostring(err))
     end
-
 end
 
--- Override native RegenTick to prevent double-application from
--- MiscTweaks.lua and ExtraArtifacts.lua. Our smooth timer is the
--- exclusive handler for skill-based HP/SP regeneration.
-function events.RegenTick() end
+-- Hook into the game's frame tick for real-time-based regen.
+-- Unlike Timer (which uses Game.Time and scales with game speed),
+-- timeGetTime() returns real wall-clock milliseconds, so the rate
+-- stays constant regardless of game speed or frame rate.
+Game.RegenerationSmooth = (Game.RegenerationSmooth == nil) and true or Game.RegenerationSmooth
 
-function events.AfterLoadMap()
-    if not timerStarted then
-        timerStarted = true
-        INTERVAL = floor(const.Second / 10)
-        Timer(RegenTick, INTERVAL, true)
-        Log(Merge.Log.Info, "%s: active (interval=%d ticks, ~%dms)", LogId, INTERVAL, floor(INTERVAL / const.Second * 1000))
+function events.Tick()
+    -- Gate on the same toggle MiscTweaks' RegenTick handlers check, so the two
+    -- systems are mutually exclusive in BOTH states: smooth on -> MiscTweaks
+    -- lump-sum returns early and this runs; smooth off -> this returns early and
+    -- MiscTweaks' native-style lump-sum runs. Without this gate, turning the
+    -- toggle off would run BOTH -> double regen (the original bug).
+    if not Game.RegenerationSmooth then return end
+    if Game.Paused or Game.MoveToMap.Defined then return end
+    local now = timeGetTime()
+    if now - lastRT >= 100 then
+        lastRT = now
+        RegenTick()
     end
 end
 

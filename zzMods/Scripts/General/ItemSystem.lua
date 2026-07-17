@@ -1,112 +1,59 @@
 -- =============================================================================
--- MMMerge Curated Item System — Runtime Logic
+-- MMMerge Curated Item System — Runtime Logic (zzMods enhanced version)
 -- Scripts/General/ItemSystem.lua
 -- =============================================================================
--- Hooks into events.ItemGenerated to REPLACE vanilla random enchantments with
--- curated prefix/suffix pairs from ItemPools.lua (not additive — see below).
+-- Hooks into events.ItemGenerated to replace vanilla random enchantments
+-- with curated prefix/suffix pairs from ItemPools.lua.
 --
--- WHAT THIS FILE DOES:
---   1. When a magic item drops, select a prefix (role) and suffix (class)
---      from ItemPools.lua based on a random party member's class.
---   2. Suppress the vanilla enchantment on that specific item instance
---      (item.Bonus/BonusStrength AND item.Bonus2 are all zeroed — these are
---      two INDEPENDENT vanilla enchantment slots, STDITEMS.TXT and
---      SPCITEMS.TXT respectively; an item can roll either one alone or both
---      at once — the engine now treats it as a common item for both stat
---      calc and name display) and tag the item with a per-instance curated
---      id stored in item.Charges.
---   3. Apply the curated stat/skill bonuses via events.CalcStatBonusByItems
---      and events.GetSkill when the player has the item equipped — this is
---      now the ONLY source of bonus for that item, not stacked on vanilla.
+-- Items are identified by composite key:
+--     Number|Bonus|BonusStrength|Bonus2
+-- (stable across inventory moves and save/load).
+-- item.Charges is set to the curated ID to trigger the native tooltip
+-- Enchantment row; ItemSystemTooltip.lua replaces "Charges: N" with
+-- the actual curated prefix/suffix stat text.
+-- Bonus/BonusStrength/Bonus2 are NEVER modified.
 --
---   Name display in tooltips/inventory is handled by ItemSystemDisplay.lua
---   (Phase 1), which patches the GetName native call site to inject the
---   curated prefix/suffix onto the displayed item name. An earlier draft of
---   this file called Game.ShowStatusText() here to announce the name at
---   "drop" time, but events.ItemGenerated also fires for items generated into
---   UNOPENED chests during map refill (confirmed via MMExtension.htm's note
---   on "artifacts generated in unopened chests... upon map refill", and
---   ExtraArtifacts.lua hooking this same event for chest-refill logic) — so
---   that call would have fired misleading "Found: X" popups for chest
---   contents nobody had touched yet, possibly in bursts on map load/refill.
---   It was removed for that reason.
+-- QUALITY: each curated item gets a random quality 0.35–0.85 based on
+-- average party level.  Stats are multiplied by quality before application.
+-- Only the top 4 stats (by adjusted value) are kept per item.
+-- Weapon-skill bonuses are filtered to the item's actual weapon type.
+-- Skill bonuses are capped at the player's base (unbuffed) skill level.
 --
--- WHY item.Charges AND NOT item.Bonus2:
---   A prior version of this system encoded ids into item.Bonus2 and it
---   crashed the game when the engine read stray values there as SpcItemsTxt
---   indices. item.Charges/MaxCharges is normally only meaningful for
---   charge-based items (wands). We only ever tag an item when
---   item.MaxCharges == 0 at generation time — i.e. the vanilla roll itself
---   proved this item type never uses charges — so repurposing Charges as our
---   id field cannot collide with real charge state. Items that DO use
---   charges (MaxCharges > 0) are left completely untouched by this system.
---   Bonus2 IS zeroed as part of suppression (see SuppressAndTag) — that's
---   safe because it's always either 0 or the item's own original vanilla
---   value (see RestoreVanilla). The crash-prone thing was writing an
---   ENCODED ID into Bonus2, which never happens — the id only ever lives
---   in Charges.
---
--- WHAT THIS FILE DOES NOT TOUCH:
---   - Common items (both Bonus and Bonus2 are 0 at generation time)
---   - Spell scrolls (item numbers handled by ItemsModifiers.lua)
---   - Charge-based items (MaxCharges > 0 at generation time — wands, etc.)
---   - Base item type, material, damage dice — untouched
---
--- KNOWN LIMITATIONS (read before relying on this in a real playthrough):
---   - Curated names ARE shown in tooltips/inventory (ItemSystemDisplay.lua
---     patches the GetName call site to inject the curated prefix/suffix). The
---     engine's name construction routine can't be hooked directly (short jump
---     at the call site), but ItemSystemDisplay.lua works around this via an
---     asmpatch that makes GetName a plain hookfunction target. See that file
---     for the full mechanism (ported from Malekitsu/Maw-Mod-MMMerge).
---   - Vendor price: structs.Item:GetValue returns only base price (item.Bonus
---     is 0). A mem.hookfunction approach caused EAccessViolation crashes.
---     Disabled for now — curated items sell at common-item base price.
---     ItemsModifiers.lua bonus-keyed logic is unaffected (curated items never
---     carry vanilla Bonuses, so those code paths simply don't trigger).
---   - Pruning (see PruneCuratedItems below) only sees items currently in
---     the party's inventory. An item sitting in an unvisited chest or on
---     the ground can have its CuratedItems entry pruned while it's away;
---     if that happens, picking it back up later just makes it a plain item
---     again (no crash — GetCuratedEntry returns nil and no bonus applies).
---
--- FILE LOCATIONS:
---   This file: Scripts/General/ItemSystem.lua   (auto-loaded by RunFiles)
---   Pool data: Scripts/Items/ItemPools.lua      (loaded via dofile below)
---
--- TOGGLE:
---   Game.ItemSystemEnabled (default true). Follows the same Game.<X>Enabled
---   convention as Cleave.lua / ManaShield.lua / Retaliation.lua / Guardian.lua.
---   - New drops: generated as curated (suppressed+tagged) while true, left
---     100% vanilla while false.
---   - Existing items: reconciled by SyncItemSystemToggle(), which runs
---     automatically after the menu toggle state is restored on game load
---     (events.AfterLoadMap) and can also be called manually right after
---     flipping the flag for an immediate effect
---     mid-session (e.g. from the debug console: `Game.ItemSystemEnabled =
---     false; SyncItemSystemToggle()`). Toggling off restores every tagged
---     item's original vanilla Bonus/BonusStrength; toggling back on re-tags
---     any item whose current (Number, Bonus, BonusStrength, Bonus2) still
---     matches a previously recorded curated entry.
+-- Toggle: Game.ItemSystemEnabled gates all event handlers.
+-- Visual layer: ItemSystemDisplay.lua (names), ItemSystemTooltip.lua (tooltips).
 -- =============================================================================
 
 local LogId = "ItemSystem"
 Log(Merge.Log.Info, "Init started: %s", LogId)
 
-Game.ItemSystemEnabled = (Game.ItemSystemEnabled == nil) and true or Game.ItemSystemEnabled
-
 -- Pool data lives in Items/ to keep it separate from logic.
 -- AppPath is set by main.lua before General/*.lua runs.
 local Pools = dofile(AppPath.."Scripts/Items/ItemPools.lua")
 local random = math.random
+local mmv = function(...) return select((offsets.MMVersion or 8) - 5, ...) end
+
+Game.ItemSystemEnabled = (Game.ItemSystemEnabled == nil) and true or Game.ItemSystemEnabled
 
 -- =============================================================================
--- POOL INDICES
--- Flat lookup tables built once from ItemPools.lua so a persisted small int
--- id (prefixId / suffixId) can be resolved back to a pool entry at runtime.
--- ORDER MUST NEVER CHANGE — changing bucket/line order, or entry order within
--- a pool, reassigns ids and desyncs existing saves' CuratedItems entries.
+-- ID ENCODING
+-- We encode our selection ID into item.Bonus2 using a non-overlapping offset
+-- (vanilla Bonus2 uses values roughly 0–80). The ID indexes into the
+-- CuratedItems table persisted via internal.SaveGameData.
+-- IDs are assigned in DETERMINISTIC ORDER so they survive save/load.
 -- =============================================================================
+local PREFIX_OFFSET = 2000   -- internal IDs for IdToPrefix (never written to items)
+local SUFFIX_OFFSET = 4000   -- internal IDs for IdToSuffix (never written to items)
+-- Ceiling for per-item entry ids stored in item.Charges. This used to be
+-- PREFIX_OFFSET (2000), which a long playthrough can genuinely exhaust --
+-- the id counter only ever grows (salvage/recuration included), and once a
+-- tag reached 2000 it was silently rejected as invalid: items curated but
+-- displayed/applied nothing (2026-07-16 hostile-QA finding). 1e6 is beyond
+-- any realistic playthrough. NOTE: entry ids share no id space with the
+-- PREFIX/SUFFIX index ids above -- those live in separate tables and are
+-- never written to item.Charges, so overlap between the ranges is harmless.
+local MAX_ENTRY_ID = 1000000
+
+-- ORDER MUST NEVER CHANGE — changing order breaks existing saves.
 local BUCKET_ORDER = {
     "Tank", "Warrior", "HybridIntellect", "HybridPersonality",
     "Intellect", "Personality", "Druid", "Ranger",
@@ -119,11 +66,11 @@ local LINE_ORDER = {
 }
 
 -- Runtime lookup tables populated during GameInitialized2
-local IdToPrefix = {}   -- [prefixId] = prefix entry table
-local IdToSuffix = {}   -- [suffixId] = suffix entry table
+local IdToPrefix = {}   -- [encodedId] = prefix entry table
+local IdToSuffix = {}   -- [encodedId] = suffix entry table
 
 local function BuildIndices()
-    local pid = 0
+    local pid = PREFIX_OFFSET
     for _, bucket in ipairs(BUCKET_ORDER) do
         local pool = Pools.Prefixes[bucket]
         if pool then
@@ -134,7 +81,7 @@ local function BuildIndices()
             end
         end
     end
-    local sid = 0
+    local sid = SUFFIX_OFFSET
     for _, line in ipairs(LINE_ORDER) do
         local pool = Pools.Suffixes[line]
         if pool then
@@ -145,7 +92,8 @@ local function BuildIndices()
             end
         end
     end
-    Log(Merge.Log.Info, "%s: Indexed %d prefixes, %d suffixes", LogId, pid, sid)
+    Log(Merge.Log.Info, "%s: Indexed %d prefixes, %d suffixes",
+        LogId, pid - PREFIX_OFFSET, sid - SUFFIX_OFFSET)
 end
 
 -- =============================================================================
@@ -619,17 +567,43 @@ local LineToBucket = {
 }
 
 -- =============================================================================
--- SELECTION HELPERS
+-- HELPERS
 -- =============================================================================
+
+-- Armor body skills that share the same equip slot — mutually exclusive.
+local ARMOR_BODY_SKILLS = {
+    [const.Skills.Leather] = true,  -- 9
+    [const.Skills.Chain]   = true,  -- 10
+    [const.Skills.Plate]   = true,  -- 11
+}
+local ARMOR_BODY_SKILL_IDS = {
+    Leather = const.Skills.Leather,
+    Chain   = const.Skills.Chain,
+    Plate   = const.Skills.Plate,
+}
+
+local function HasArmorConflict(stats, requiredSkill)
+    if not stats or not requiredSkill or not ARMOR_BODY_SKILLS[requiredSkill] then
+        return false
+    end
+    for name in pairs(stats) do
+        local skillId = ARMOR_BODY_SKILL_IDS[name]
+        if skillId and skillId ~= requiredSkill then
+            return true
+        end
+    end
+    return false
+end
 
 -- Select a random prefix from pool filtered by alignment.
 -- gen/spec tags are always eligible. light/dark tags are only eligible
 -- when the character's alignment matches exactly.
-local function SelectPrefix(pool, alignment)
+local function SelectPrefix(pool, alignment, requiredSkill)
     local c = {}
     for _, e in ipairs(pool) do
         if not (e.tag == "light" and alignment ~= "light")
-        and not (e.tag == "dark"  and alignment ~= "dark") then
+        and not (e.tag == "dark"  and alignment ~= "dark")
+        and not HasArmorConflict(e.stats, requiredSkill) then
             c[#c + 1] = e
         end
     end
@@ -639,12 +613,13 @@ end
 -- Select a random suffix from pool filtered by tier and alignment.
 -- Falls back to tier 0 if no tier match (should not happen with complete pool data).
 -- Alignment filter is applied in both the primary pass and the fallback.
-local function SelectSuffix(pool, tier, alignment)
+local function SelectSuffix(pool, tier, alignment, requiredSkill)
     local c = {}
     for _, e in ipairs(pool) do
         if e.tier == tier
         and not (e.alignment == "light" and alignment ~= "light")
-        and not (e.alignment == "dark"  and alignment ~= "dark") then
+        and not (e.alignment == "dark"  and alignment ~= "dark")
+        and not HasArmorConflict(e.stats, requiredSkill) then
             c[#c + 1] = e
         end
     end
@@ -653,7 +628,8 @@ local function SelectSuffix(pool, tier, alignment)
         for _, e in ipairs(pool) do
             if e.tier == 0
             and not (e.alignment == "light" and alignment ~= "light")
-            and not (e.alignment == "dark"  and alignment ~= "dark") then
+            and not (e.alignment == "dark"  and alignment ~= "dark")
+            and not HasArmorConflict(e.stats, requiredSkill) then
                 c[#c + 1] = e
             end
         end
@@ -665,13 +641,23 @@ end
 -- Guard: ItemGenerated can fire during world load before the Party struct
 -- is mapped into memory (Party[i] throws "array index out of bounds").
 -- Check Party.count before iterating to avoid spamming the error log.
-local function RandomPartyMember()
+-- When requiredSkill is set, only members whose class can reach Master+ are eligible.
+local function RandomPartyMember(requiredSkill)
     if not Party or not Party.count or Party.count < 1 then return nil end
     local active = {}
     for i = 0, Party.count - 1 do
         local ok, p = pcall(function() return Party[i] end)
         if ok and p and p.Class and p.Class >= 0 then
-            active[#active + 1] = p
+            if not requiredSkill then
+                active[#active + 1] = p
+            else
+                local mastery = Game.Classes.Skills
+                    and Game.Classes.Skills[p.Class]
+                    and Game.Classes.Skills[p.Class][requiredSkill]
+                if mastery and mastery >= 3 then
+                    active[#active + 1] = p
+                end
+            end
         end
     end
     return #active > 0 and active[random(#active)] or nil
@@ -685,35 +671,42 @@ local function IsExcludedItem(num)
         or (num > 1801 and num < 1902)  -- MM8 spell scrolls
 end
 
--- True if it is safe to store our curated id in item.Charges: only when the
--- vanilla roll itself left MaxCharges at 0, i.e. this item type never uses
--- charges for anything (see header comment for why this matters).
-local function CanTagItem(item)
-    return item.MaxCharges == 0
+-- Only EQUIPPABLE item types may be curated. Curated bonuses apply solely
+-- through the equipped-item scan, so curating a consumable is at best inert
+-- -- and for potions/reagents it is DESTRUCTIVE: they store their power in
+-- item.Bonus, so the "suppress vanilla enchant" step (Bonus = 0) erased
+-- potion strength (found in playtesting 2026-07-17: potions showing curated
+-- stats). EquipStat is const.ItemType - 1 (see zzLootAll.lua's Gold check),
+-- so 12..18 = wand, reagent, potion, scroll, book, mscroll, gold. Everything
+-- else (0..11 wearables, 19+ Merge-extended categories) is fair game.
+local function IsCuratableType(item)
+    local t = item and item["T"] and item:T()
+    if not t then return false end
+    local es = t.EquipStat
+    return not (es >= 12 and es <= 18)
 end
 
--- =============================================================================
--- QUALITY — stat variance tied to party level
--- =============================================================================
-
--- Average level of all party members (ceil). Returns 1 if no valid data.
-local function AveragePartyLevel()
-    local total, count = 0, 0
-    for i = 0, Party.count - 1 do
-        local ok, p = pcall(function() return Party[i] end)
-        if ok and p and p.LevelBase and p.LevelBase > 0 then
-            total = total + p.LevelBase
-            count = count + 1
+-- Roll item quality based on average party experience level.
+-- Per the design doc (README_ItemSystem.md "Stat Variance — Quality"):
+-- pool values are MAXIMUM possible values; quality is in [0.35, 1.00],
+-- scaling with party level over 124 levels. (An interim version used
+-- [0.5, 1.5], letting items roll 150% of pool maximums -- overpowered,
+-- reported in play-testing 2026-07-16.)
+local function RollQuality()
+    local avgLevel = 1
+    if Party and Party.Players then
+        local total, n = 0, 0
+        for _, p in Party.Players do
+            -- LevelBase is a real, documented Player field. A previous
+            -- version read the nonexistent `p.ExpForLevel`, so quality never
+            -- scaled with party level (caught in the 2026-07-16 QA pass).
+            if p and p.LevelBase then
+                total = total + p.LevelBase
+                n = n + 1
+            end
         end
+        if n > 0 then avgLevel = math.max(1, total / n) end
     end
-    return count > 0 and math.ceil(total / count) or 1
-end
-
--- Roll a quality multiplier for a newly generated item. Scales with party
--- level so early-game items are noticeably weaker than endgame ones.
--- At level 1:   [0.35, 0.55]
--- At level 125: [0.75, 1.00]
-local function RollQuality(avgLevel)
     local progress = math.min(1, (avgLevel - 1) / 124)
     local minQ = 0.35 + progress * 0.40
     local maxQ = 0.55 + progress * 0.45
@@ -722,65 +715,58 @@ end
 
 -- =============================================================================
 -- PERSISTENT CURATED ITEM STORAGE
--- Selections survive save/load via internal.SaveGameData.CuratedItems[],
--- keyed by a small sequential id that is ALSO written into item.Charges on
--- the specific item instance — that makes the id → item link per-instance
--- instead of "shared by any item with the same rolled stats" like the old
--- structural-key approach.
---   entry = {
---     prefixId, suffixId,        -- resolve via IdToPrefix/IdToSuffix
---     itemNumber,                 -- item.Number at generation time (for revert matching)
---     origBonus, origBonusStrength, origBonus2,  -- vanilla roll, for full revert
---     quality,                    -- stat multiplier [0.35-1.00], scales with party level
---   }
+-- Selections survive save/load via internal.SaveGameData.CuratedItems[].
+-- Items are identified by their 4-field composite key:
+--   (Number, Bonus, BonusStrength, Bonus2)
+-- Entry format (hybrid): { prefixId, suffixId, num, bonus, bonusStr, bonus2, quality = quality }
+-- item fields are NEVER modified.
 -- =============================================================================
 
-local CuratedItems  -- table: { [id] = entry }
+local CuratedItems       -- table: { [id] = { prefixId=, suffixId=, num=, bonus=, bonusStr=, bonus2=, quality= } }
+local CuratedItemLookup  -- reverse-index: key = "num|bonus|bonusStr|bonus2" → id
 local NextCuratedId
 
-local function NewCuratedId()
-    local id = NextCuratedId
-    NextCuratedId = NextCuratedId + 1
-    if internal and internal.SaveGameData then
-        internal.SaveGameData.NextCuratedId = NextCuratedId
+-- Entry field accessors, reading every format this project has ever saved
+-- (all confirmed present in real saves via the 2026-07-16 [DIAG ENTRY] dump):
+--   current:   { prefixId=, suffixId=, num=,        bonus=,     bonusStr=,          bonus2= }
+--   legacy:    { prefixId=, suffixId=, itemNumber=, origBonus=, origBonusStrength=, origBonus2= }
+--   array-era: { [1]=pid, [2]=sid, [3]=num, [4]=bonus, [5]=bonusStr, [6]=bonus2 }
+-- New entries MUST use the current named form. NOTE: legacy prefixId/suffixId
+-- values use the old sequential index space and will NOT resolve in the
+-- current PREFIX_OFFSET-based IdToPrefix/IdToSuffix -- GetCuratedIdAndEntry
+-- treats unresolvable entries as "not curated" so recuration replaces them.
+local function EntryPrefixId(e) return e.prefixId or e[1] end
+local function EntrySuffixId(e) return e.suffixId or e[2] end
+local function EntryNumber(e)   return e.num      or e.itemNumber        or e[3] end
+local function EntryBonus(e)    return e.bonus    or e.origBonus         or e[4] end
+local function EntryBonusStr(e) return e.bonusStr or e.origBonusStrength or e[5] end
+local function EntryBonus2(e)   return e.bonus2   or e.origBonus2        or e[6] end
+
+-- O(1) lookup with linear-scan fallback (handles edge cases).
+local function LookupCuratedId(key)
+    local id = CuratedItemLookup and CuratedItemLookup[key]
+    if id then return id end
+    if not CuratedItems then return nil end
+    for eid, entry in pairs(CuratedItems) do
+        if EntryNumber(entry) then
+            local ek = EntryNumber(entry) .. "|" .. (EntryBonus(entry) or 0) .. "|" .. (EntryBonusStr(entry) or 0) .. "|" .. (EntryBonus2(entry) or 0)
+            if ek == key then
+                CuratedItemLookup[key] = eid
+                return eid
+            end
+        end
     end
-    return id
+    return nil
 end
 
--- Suppress the vanilla enchantment on `item` and tag it with `id`. Zeroes
--- BOTH enchantment slots (Bonus/BonusStrength from STDITEMS.TXT, and Bonus2
--- from SPCITEMS.TXT — an item can carry either or both independently; a
--- weapon can roll a Bonus2-only "special" enchant with Bonus left at 0).
--- Setting Bonus2 to 0 is a proven-safe operation already used elsewhere in
--- this codebase (Quest_CrossContinents.lua's SetupScroll,
--- RemoveItemsLimits.lua's native cleanup hook both do it) — the crash this
--- file avoids is WRITING AN ENCODED ID into Bonus2, not zeroing it. The id
--- lives exclusively in item.Charges; Bonus2 only ever holds 0 or the item's
--- own original vanilla-rolled value (see RestoreVanilla).
-local function SuppressAndTag(item, id)
-    item.Bonus = 0
-    item.BonusStrength = 0
-    item.Bonus2 = 0
-    item.Charges = id
-end
-
--- Restore `item`'s original vanilla enchantment from its curated entry and
--- remove the tag. Does not delete the CuratedItems entry (kept so re-enabling
--- the system can re-associate this exact item — see SyncItemSystemToggle).
-local function RestoreVanilla(item, entry)
-    item.Bonus = entry.origBonus
-    item.BonusStrength = entry.origBonusStrength
-    item.Bonus2 = entry.origBonus2
-    item.Charges = 0
-end
-
-local function GetCuratedEntry(item)
-    if not item or not CuratedItems then return nil end
-    if not CanTagItem(item) then return nil end
-    local id = item.Charges
-    if not id or id <= 0 then return nil end
-    return CuratedItems[id], id
-end
+-- Forward declaration: GetItemRequiredSkill is defined further down (with the
+-- equip-slot tables it needs) but called inside events.ItemGenerated below.
+-- Without this, the call compiled as a GLOBAL lookup (nil) and EVERY item
+-- generation errored out ("attempt to call global 'GetItemRequiredSkill'"),
+-- silently leaving all items vanilla -- caught in the 2026-07-14 pre-ship
+-- audit from the session log. Locals must be declared before any closure
+-- that references them is compiled.
+local GetItemRequiredSkill
 
 -- =============================================================================
 -- MAIN HOOK
@@ -790,31 +776,50 @@ function events.ItemGenerated(t)
     if not Game.ItemSystemEnabled then return end
     local ok, err = pcall(function()
         if not CuratedItems then return end
-
         local item = t.Item
-
-        -- Skip common items: vanilla assigns no enchantment in either slot.
-        -- Bonus (STDITEMS.TXT) and Bonus2 (SPCITEMS.TXT) roll independently —
-        -- an item can have only Bonus2 set with Bonus at 0 (confirmed via
-        -- ItemTest.Inspect during testing: "Exquisite Long Dagger", Bonus=0,
-        -- Bonus2=64, Material=0 — a real magic item this check used to miss).
-        local hasBonus  = item.Bonus  and item.Bonus  > 0
-        local hasBonus2 = item.Bonus2 and item.Bonus2 > 0
-        if not hasBonus and not hasBonus2 then return end
-
-        -- Skip scroll ranges handled by ItemsModifiers.lua
+        if not item.Bonus or item.Bonus == 0 then return end
         if IsExcludedItem(item.Number) then return end
+        if item.MaxCharges and item.MaxCharges > 0 then return end
+        if not IsCuratableType(item) then return end
 
-        -- Skip charge-based items (wands, etc.) — see CanTagItem / header comment
-        if not CanTagItem(item) then return end
+        local requiredSkill = GetItemRequiredSkill(item)
+        local player = RandomPartyMember(requiredSkill)
+        local class
+        if player then
+            class = player.Class
+        else
+            -- No eligible party member: either the party isn't loaded yet
+            -- (startup / initial shop+chest stocking fires before the save's
+            -- party exists -- confirmed via [DIAG] logging, see AGENTS.md
+            -- ItemSystem recovery incident) or no member's class can reach
+            -- Master+ in requiredSkill. Fall back to a random mapped class so
+            -- these items still get curated instead of silently staying
+            -- vanilla -- this exact regression shipped once ("first shop all
+            -- vanilla"). Respect the skill gate when one applies; if nothing
+            -- satisfies it, any mapped class beats no curation at all.
+            local candidates = {}
+            for cls in pairs(ClassToLine) do
+                if not requiredSkill then
+                    candidates[#candidates + 1] = cls
+                else
+                    local m = Game.Classes and Game.Classes.Skills
+                        and Game.Classes.Skills[cls]
+                        and Game.Classes.Skills[cls][requiredSkill]
+                    if m and m >= 3 then candidates[#candidates + 1] = cls end
+                end
+            end
+            if #candidates == 0 then
+                for cls in pairs(ClassToLine) do candidates[#candidates + 1] = cls end
+            end
+            if #candidates == 0 then return end
+            class = candidates[random(#candidates)]
+        end
 
-        -- Pick a random party member to target this item toward
-        local player = RandomPartyMember()
-        if not player then return end
-
-        local class = player.Class
         local line  = ClassToLine[class]
-        if not line then return end
+        if not line then
+            Log(Merge.Log.Error, "%s: ItemGenerated #%d — class %d not in ClassToLine", LogId, item.Number, class)
+            return
+        end
 
         local bucket    = LineToBucket[line]
         local tier      = ClassTier[class]      or 0
@@ -822,29 +827,54 @@ function events.ItemGenerated(t)
 
         local prefixPool = Pools.Prefixes[bucket]
         local suffixPool = Pools.Suffixes[line]
-        if not prefixPool or not suffixPool then return end
+        if not prefixPool or not suffixPool then
+            Log(Merge.Log.Error, "%s: ItemGenerated #%d — pool missing bucket=%s line=%s", LogId, item.Number, bucket, line)
+            return
+        end
 
-        local prefix = SelectPrefix(prefixPool, alignment)
-        local suffix = SelectSuffix(suffixPool, tier, alignment)
-        if not prefix or not suffix then return end
+        local prefix = SelectPrefix(prefixPool, alignment, requiredSkill)
+        if not prefix then
+            Log(Merge.Log.Error, "%s: ItemGenerated #%d — no prefix for bucket=%s align=%s", LogId, item.Number, bucket, alignment)
+            return
+        end
+        local suffix = SelectSuffix(suffixPool, tier, alignment, requiredSkill)
+        if not suffix then
+            Log(Merge.Log.Error, "%s: ItemGenerated #%d — no suffix for line=%s tier=%d align=%s", LogId, item.Number, line, tier, alignment)
+            return
+        end
 
-        local quality = RollQuality(AveragePartyLevel())
-        local id = NewCuratedId()
+        local quality = RollQuality()
+
+        local id = NextCuratedId
+        NextCuratedId = NextCuratedId + 1
+        if internal and internal.SaveGameData then
+            internal.SaveGameData.NextCuratedId = NextCuratedId
+        end
         CuratedItems[id] = {
-            prefixId          = prefix._prefixId,
-            suffixId          = suffix._suffixId,
-            itemNumber        = item.Number,
-            origBonus         = item.Bonus,
-            origBonusStrength = item.BonusStrength,
-            origBonus2        = item.Bonus2,
-            quality           = quality,
+            prefixId = prefix._prefixId,
+            suffixId = suffix._suffixId,
+            num      = item.Number or 0,
+            bonus    = item.Bonus or 0,
+            bonusStr = item.BonusStrength or 0,
+            bonus2   = item.Bonus2 or 0,
+            quality  = quality,
         }
-        SuppressAndTag(item, id)
+        local key = (item.Number or 0) .. "|" .. (item.Bonus or 0) .. "|" .. (item.BonusStrength or 0) .. "|" .. (item.Bonus2 or 0)
+        if not CuratedItemLookup[key] then CuratedItemLookup[key] = id end
+        item.Charges = id   -- primary identity tag; also triggers the native Enchantment row the tooltip replaces
+        -- Suppress the vanilla enchantment so ONLY the curated bonuses apply.
+        -- Without this, the native engine kept applying the vanilla roll
+        -- invisibly alongside the curated stats (double-dipping, with only
+        -- the curated half displayed) -- reported in play-testing 2026-07-16.
+        -- The original roll is preserved in the entry above for revert.
+        item.Bonus = 0
+        item.BonusStrength = 0
+        item.Bonus2 = 0
 
         Log(Merge.Log.Info,
-            "%s: Item #%d → \"%s\" + \"%s\" [class=%d tier=%d %s] (q=%.2f id=%d)",
+            "%s: Item #%d → \"%s\" + \"%s\" [class=%d tier=%d %s] (id=%d qual=%.2f)",
             LogId, item.Number, prefix.name, suffix.name,
-            class, tier, alignment, quality, id)
+            class, tier, alignment, id, quality)
     end)
     if not ok then
         Log(Merge.Log.Error, "%s: ItemGenerated error: %s", LogId, err)
@@ -856,36 +886,168 @@ end
 -- Other scripts can inspect what enchantment is on any item.
 -- =============================================================================
 
--- Returns the prefix entry table for a curated item (or nil)
+-- Identity is the item.Charges tag (primary), NOT the composite key: since
+-- curation zeroes the vanilla Bonus fields (see ItemGenerated), every curated
+-- item of the same Number reads "num|0|0|0" and composite keys can no longer
+-- distinguish them. The composite key of the ORIGINAL roll is still stored in
+-- each entry (fields 3-6) for revert and for the recuration tool. The entry's
+-- stored Number (entry.num) is sanity-checked against the item so a stale tag
+-- from an older id scheme can never match the wrong entry.
+local function GetCuratedIdAndEntry(item)
+    if not item then return nil, nil end
+    local id = item.Charges
+    if not id or id <= 0 or id >= MAX_ENTRY_ID then return nil, nil end
+    local entry = CuratedItems and CuratedItems[id]
+    if not entry then return nil, nil end
+    local eNum = EntryNumber(entry)
+    if eNum and item.Number and eNum ~= item.Number then return nil, nil end
+    -- An entry only counts if it actually resolves to a live prefix+suffix.
+    -- Legacy entries (old sequential id space) and content-damaged entries
+    -- would otherwise be "present but unusable": items looked curated to
+    -- IsCuratedItem (blocking recuration forever) while displaying and
+    -- applying NOTHING -- the recuration deadlock observed 2026-07-16.
+    if not IdToPrefix[EntryPrefixId(entry) or -1]
+            or not IdToSuffix[EntrySuffixId(entry) or -1] then
+        return nil, nil
+    end
+    return id, entry
+end
+
+local function GetCuratedIds(item)
+    local _, entry = GetCuratedIdAndEntry(item)
+    if entry then
+        return IdToPrefix[EntryPrefixId(entry)], IdToSuffix[EntrySuffixId(entry)]
+    end
+    return nil, nil
+end
+
 function GetItemPrefix(item)
-    local entry = GetCuratedEntry(item)
-    return entry and IdToPrefix[entry.prefixId]
+    local p = GetCuratedIds(item)
+    return p
 end
 
--- Returns the suffix entry table for a curated item (or nil)
 function GetItemSuffix(item)
-    local entry = GetCuratedEntry(item)
-    return entry and IdToSuffix[entry.suffixId]
+    local _, s = GetCuratedIds(item)
+    return s
 end
 
--- Returns true if this item was enchanted by the curated system
 function IsCuratedItem(item)
-    return GetCuratedEntry(item) ~= nil
+    local _, entry = GetCuratedIdAndEntry(item)
+    return entry ~= nil
+end
+
+function GetCuratedEntry(item)
+    local _, entry = GetCuratedIdAndEntry(item)
+    return entry
 end
 
 -- =============================================================================
--- STAT & SKILL APPLICATION
+-- WEAPON-SKILL FILTER
+-- A weapon item can only apply bonuses for its OWN weapon skill.
+-- Staff and Unarmed are treated as compatible (Monk exception).
+-- =============================================================================
+local WeaponSkillStats = {
+    Sword = true, Axe = true, Mace = true, Dagger = true,
+    Staff = true, Spear = true, Bow = true, Unarmed = true,
+}
+
+-- Item types that require a specific skill to use effectively.
+-- Weapons (0/1/2, 22-29) → weapon skill ID.
+-- Body armor (3, 30-32) → Leather/Chain/Plate skill ID.
+-- Shield (4, 33) → Shield skill ID.
+local EQUIP_SKILL_SLOTS = {
+    [0] = true, [1] = true, [2] = true,       -- Weapon(1H), Weapon2H, Missile (old)
+    [3] = true,                                 -- Armor (old)
+    [4] = true,                                 -- Shield (old)
+    [22] = true, [23] = true, [24] = true,     -- Sword, Dagger, Axe (extended)
+    [25] = true, [26] = true, [27] = true,     -- Spear, Bow, Mace (extended)
+    [28] = true, [29] = true,                   -- Club, Staff (extended)
+    [30] = true, [31] = true, [32] = true,      -- Leather, Chain, Plate (extended)
+    [33] = true,                                 -- Shield_ (extended)
+}
+
+-- (assigns the forward-declared local above -- do NOT re-declare with `local`,
+-- or ItemGenerated's captured upvalue would stay nil)
+function GetItemRequiredSkill(item)
+    local t = item and item["T"] and item:T()
+    if not t or not EQUIP_SKILL_SLOTS[t.EquipStat] then return nil end
+    return t.Skill
+end
+
+local function GetItemWeaponSkill(item)
+    local t = item and item["T"] and item:T()
+    if not t then return nil end
+    local equipStat = t.EquipStat
+    if equipStat ~= 22 and equipStat ~= 23 and equipStat ~= 24 then return nil end
+    return t.Skill
+end
+
+function FilterStatsForItem(item, stats)
+    if not stats then return stats end
+    local weaponSkill = GetItemWeaponSkill(item)
+    local requiredSkill = GetItemRequiredSkill(item)
+    local isArmorSlot = requiredSkill and ARMOR_BODY_SKILLS[requiredSkill]
+    if not weaponSkill and not isArmorSlot then return stats end
+    local result = {}
+    for name, value in pairs(stats) do
+        local armorSkillId = ARMOR_BODY_SKILL_IDS[name]
+        if armorSkillId then
+            -- Armor skill bonus: keep only if it matches the item's slot
+            if isArmorSlot and armorSkillId == requiredSkill then
+                result[name] = value
+            end
+        elseif weaponSkill and WeaponSkillStats[name] then
+            -- Weapon skill bonus: keep only if it matches the item's weapon skill
+            if name == weaponSkill then
+                result[name] = value
+            elseif weaponSkill == const.Skills.Staff and name == "Unarmed" then
+                result[name] = value
+            elseif name == "Staff" and weaponSkill == const.Skills.Unarmed then
+                result[name] = value
+            end
+        else
+            result[name] = value
+        end
+    end
+    return result
+end
+
+-- =============================================================================
+-- STAT COUNT CAP & SKILL BONUS CAP
+-- After quality adjustment, keep only the top N stat/skill values per item.
+-- Skill bonuses are capped at the player's base (unbuffed) skill level.
+-- =============================================================================
+local MAX_ITEM_STATS = 4
+
+-- Returns (level, mastery) -- SAME ORDER as the global SplitSkill in
+-- Scripts/Structs/After/Functions.lua (level = bits 0-5, mastery = bits 6+).
+-- A previous version returned them REVERSED, which made the skill cap in
+-- events.GetSkill cap by mastery code (0/1/2/4) instead of skill level --
+-- a level-10 Normal-mastery skill capped item bonuses at 1 (caught in the
+-- 2026-07-16 hostile-QA pass).
+local function SplitSkill(skillAndMastery)
+    if not skillAndMastery then return 0, 0 end
+    return skillAndMastery % 64, math.floor(skillAndMastery / 64)
+end
+
+-- (skill cap is applied inside events.GetSkill on the cross-item total --
+-- see the "Skill Bonus Cap" comment there)
+
+-- =============================================================================
+-- PHASE 2: STAT & SKILL APPLICATION
 -- Two hooks apply curated stat and skill bonuses from equipped items.
 --   CalcStatBonusByItems — primary stats, HP, SP, AC, magic schools
 --   GetSkill             — weapon skills, armor skills, utility skills
--- Both hooks share a per-player cache (BonusCache) invalidated automatically
--- when that player's equipped-item indices change — see GetCachedBonuses.
+-- Quality, weapon-skill filter, top-N trim, and skill cap are applied.
 -- =============================================================================
 
--- Pool stat name → const.Stats mapping.
--- Repair/Bodybuilding/Perception are NOT included here: this engine version's
--- const.Stats has no such entries (only const.Skills does), so they belong in
--- SkillMap only — listing them here would just resolve to nil and do nothing.
+-- Pool stat name → const.Stats mapping. CORE ATTRIBUTES ONLY (applied via
+-- events.CalcStatBonusByItems, uncapped per the design doc). All skill-type
+-- bonuses -- including magic schools -- live in SkillMap below so they flow
+-- through events.GetSkill and the skill cap ("Skill Bonus Cap" section of
+-- README_ItemSystem.md). An interim version routed schools and utility
+-- skills through this uncapped stat channel, bypassing the cap entirely
+-- (reported as overpowered in play-testing 2026-07-16).
 local StatMap = {
     Might       = const.Stats.Might,
     Intellect   = const.Stats.Intellect,
@@ -897,30 +1059,15 @@ local StatMap = {
     HP          = const.Stats.HP,
     SP          = const.Stats.SP,
     AC          = const.Stats.ArmorClass,
-    Fire        = const.Stats.FireMagic,
-    Air         = const.Stats.AirMagic,
-    Water       = const.Stats.WaterMagic,
-    Earth       = const.Stats.EarthMagic,
-    Spirit      = const.Stats.SpiritMagic,
-    Mind        = const.Stats.MindMagic,
-    Body        = const.Stats.BodyMagic,
-    Light       = const.Stats.LightMagic,
-    Dark        = const.Stats.DarkMagic,
-    Bow         = const.Stats.Bow,
-    Shield      = const.Stats.Shield,
-    Meditation  = const.Stats.Meditation,
-    Unarmed     = const.Stats.Unarmed,
-    Dodge       = const.Stats.Dodging,
-    Armsmaster  = const.Stats.Armsmaster,
-    Alchemy     = const.Stats.Alchemy,
-    Stealing    = const.Stats.Stealing,
-    DisarmTrap  = const.Stats.DisarmTraps,
-    IdentifyItem= const.Stats.IdentifyItem,
-    IdentifyMonster = const.Stats.IdentifyMonster,
-    Learning    = const.Stats.Learning,
 }
 
--- Pool skill name → const.Skills mapping (for skills not in StatMap)
+-- Pool skill name → const.Skills mapping. Everything skill-shaped lives here
+-- (weapon, armor, utility, AND magic schools) so it all flows through
+-- events.GetSkill and the skill cap, per the design doc. Earlier the schools
+-- appeared starved out of the top-4 trim ("of the Lich" gave no skills) --
+-- that was actually the inflated [0.5,1.5] quality range bloating attribute
+-- values past them, not a flaw in the trim; with the spec's [0.35,1.0] range
+-- the ranking behaves as the doc's own worked example shows.
 local SkillMap = {
     Sword          = const.Skills.Sword,
     Axe            = const.Skills.Axe,
@@ -928,9 +1075,34 @@ local SkillMap = {
     Dagger         = const.Skills.Dagger,
     Staff          = const.Skills.Staff,
     Spear          = const.Skills.Spear,
+    Bow            = const.Skills.Bow,
+    Shield         = const.Skills.Shield,
     Plate          = const.Skills.Plate,
     Chain          = const.Skills.Chain,
     Leather        = const.Skills.Leather,
+    Fire           = const.Skills.Fire,
+    Air            = const.Skills.Air,
+    Water          = const.Skills.Water,
+    Earth          = const.Skills.Earth,
+    Spirit         = const.Skills.Spirit,
+    Mind           = const.Skills.Mind,
+    Body           = const.Skills.Body,
+    Light          = const.Skills.Light,
+    Dark           = const.Skills.Dark,
+    Meditation     = const.Skills.Meditation,
+    Unarmed        = const.Skills.Unarmed,
+    Dodge          = const.Skills.Dodging,
+    Armsmaster     = const.Skills.Armsmaster,
+    Alchemy        = const.Skills.Alchemy,
+    Stealing       = const.Skills.Stealing,
+    -- This pack FREES the DisarmTraps slot (31) and merges disarming into
+    -- Perception (see zzMods/AGENTS.md "Skill Slot Reuse") -- a bonus routed
+    -- to slot 31 would be dead weight ("the Deerslayer" grants DisarmTrap=2).
+    -- Map the pool name to Perception, the skill that actually disarms now.
+    DisarmTrap     = const.Skills.Perception,
+    IdentifyItem   = const.Skills.IdentifyItem,
+    IdentifyMonster= const.Skills.IdentifyMonster,
+    Learning       = const.Skills.Learning,
     Merchant       = const.Skills.Merchant,
     Repair         = const.Skills.Repair,
     Bodybuilding   = const.Skills.Bodybuilding,
@@ -939,170 +1111,13 @@ local SkillMap = {
     DragonMagic    = const.Skills.DragonAbility,
 }
 
--- =============================================================================
--- WEAPON SKILL FILTER
--- A weapon can only ever benefit from ITS OWN weapon skill -- a Mace boosting
--- Sword skill is nonsensical, since equipping the Mace never uses Sword skill
--- at all. Suffix/prefix SELECTION stays independent of base item type (a
--- Mace can still roll "the Knight" for flavor -- Knights plausibly use maces
--- too), but any of the 8 weapon-skill stats that doesn't match the actual
--- equipped item's own weapon skill is dropped before it's applied. This is
--- deliberately narrow: only weapon-skill-vs-weapon-skill mismatches are
--- filtered. Non-weapon items (rings, armor, amulets) are never restricted --
--- a Ring granting a weapon-skill bonus isn't the problem this solves.
--- Also used by ItemSystemTooltip.lua (via ItemSystemInternal) so the
--- tooltip's displayed stat list never shows a bonus that isn't really
--- applying.
--- =============================================================================
-
--- const.Skills ids for the 8 weapon skills, used as a fast membership set.
-local WeaponSkillIds = {
-    [const.Skills.Sword]   = true,
-    [const.Skills.Axe]     = true,
-    [const.Skills.Mace]    = true,
-    [const.Skills.Dagger]  = true,
-    [const.Skills.Staff]   = true,
-    [const.Skills.Spear]   = true,
-    [const.Skills.Bow]     = true,
-    [const.Skills.Unarmed] = true,
-}
-
--- Pool stat name -> const.Skills id, ONLY for the 8 weapon-skill names.
--- Separate from StatMap/SkillMap (which route Bow/Unarmed through
--- const.Stats, not const.Skills) -- this table exists purely to compare
--- against an item's own item:T().Skill value.
-local StatNameToWeaponSkillId = {
-    Sword   = const.Skills.Sword,
-    Axe     = const.Skills.Axe,
-    Mace    = const.Skills.Mace,
-    Dagger  = const.Skills.Dagger,
-    Staff   = const.Skills.Staff,
-    Spear   = const.Skills.Spear,
-    Bow     = const.Skills.Bow,
-    Unarmed = const.Skills.Unarmed,
-}
-
--- Item categories that are actually weapons (melee 1H, melee 2H, ranged).
--- Everything else (Armor, Shield, Ring, Amulet, Belt, Gauntlets, Boots,
--- Wand, etc.) is never restricted by this filter, regardless of what its
--- .Skill field happens to contain -- checking EquipStat too (not just
--- .Skill) means that's a guarantee, not an assumption about unverifiable
--- ItemsTxt data (LOD-extracted, not available to read outside the running
--- game). This is specifically what lets Unarmed appear freely on gloves,
--- rings, necklaces, belts, etc. while still being excluded from actual
--- weapons (a Sword's own skill is Sword, never Unarmed, so an Unarmed
--- stat on a Sword gets filtered same as any other mismatched weapon skill).
-local WeaponEquipTypes = {
-    [const.ItemType.Weapon]   = true,
-    [const.ItemType.Weapon2H] = true,
-    [const.ItemType.Missile]  = true,
-}
-
--- Returns the item's own weapon-skill const.Skills id if it's one of the 8
--- recognized weapon types AND actually equips as a weapon, or nil otherwise
--- (non-weapon equip category, or a weapon type whose Skill isn't one of the
--- 8 -- e.g. Blaster).
-local function ItemWeaponSkillId(item)
-    local ok, def = pcall(function() return item:T() end)
-    if not ok or not def then return nil end
-    if not WeaponEquipTypes[def.EquipStat + 1] then return nil end  -- EquipStat = const.ItemType value - 1
-    if WeaponSkillIds[def.Skill] then
-        return def.Skill
-    end
-    return nil
-end
-
--- Some weapon types have a real thematic/mechanical secondary skill beyond
--- their own -- Staff-wielders (Monks) also train Unarmed combat, unlike the
--- arbitrary pairings (e.g. a Mace boosting Sword) this filter otherwise
--- removes. Both skills survive together only for pairings listed here;
--- everything else still requires an exact match.
-local CompatibleWeaponSkills = {
-    [const.Skills.Staff] = { [const.Skills.Unarmed] = true },
-}
-
-local function IsWeaponSkillAllowed(weaponSkillId, statSkillId)
-    if statSkillId == weaponSkillId then return true end
-    local compatible = CompatibleWeaponSkills[weaponSkillId]
-    return compatible ~= nil and compatible[statSkillId] == true
-end
-
--- Returns `stats` unchanged if no filtering is needed (the common case --
--- avoids allocating a new table on every call), or a filtered copy with any
--- mismatched weapon-skill entries removed.
-local function FilterStatsForItem(item, stats)
-    if not stats then return nil end
-    local weaponSkillId = ItemWeaponSkillId(item)
-    if not weaponSkillId then return stats end
-    local needsFilter = false
-    for k in pairs(stats) do
-        local statSkillId = StatNameToWeaponSkillId[k]
-        if statSkillId and not IsWeaponSkillAllowed(weaponSkillId, statSkillId) then
-            needsFilter = true
-            break
-        end
-    end
-    if not needsFilter then return stats end
-    local result = {}
-    for k, v in pairs(stats) do
-        local statSkillId = StatNameToWeaponSkillId[k]
-        if not statSkillId or IsWeaponSkillAllowed(weaponSkillId, statSkillId) then
-            result[k] = v
-        end
-    end
-    return result
-end
-
--- Accumulate one pool entry's stats into the given stat/skill accumulators,
--- after filtering out any weapon skill that doesn't match `item`'s own.
--- `quality` (0.0–1.0) scales each stat value so items vary in strength.
-local function ApplyStats(item, poolEntry, statAcc, skillAcc, quality)
-    if not poolEntry or not poolEntry.stats then return end
-    local stats = FilterStatsForItem(item, poolEntry.stats)
-    for k, v in pairs(stats) do
-        local adjusted = math.max(1, math.floor(v * quality))
-        if StatMap[k] then
-            statAcc[StatMap[k]] = (statAcc[StatMap[k]] or 0) + adjusted
-        elseif SkillMap[k] then
-            skillAcc[SkillMap[k]] = (skillAcc[SkillMap[k]] or 0) + adjusted
-        end
-    end
-end
-
--- Keep only the top N combined stat+skill entries by value, dropping the rest.
--- This prevents curated items from accumulating too many bonuses.
-local MAX_ITEM_STATS = 4
-
-local function TrimStats(statAcc, skillAcc, maxCount)
-    local combined = {}
-    for id, val in pairs(statAcc) do
-        combined[#combined + 1] = { id = id, val = val, kind = "stat" }
-    end
-    for id, val in pairs(skillAcc) do
-        combined[#combined + 1] = { id = id, val = val, kind = "skill" }
-    end
-    if #combined <= maxCount then return end
-    table.sort(combined, function(a, b) return a.val > b.val end)
-    local keep = {}
-    for i = 1, maxCount do
-        local entry = combined[i]
-        keep[entry.kind .. ":" .. entry.id] = true
-    end
-    for _, entry in ipairs(combined) do
-        if not keep[entry.kind .. ":" .. entry.id] then
-            if entry.kind == "stat" then
-                statAcc[entry.id] = nil
-            else
-                skillAcc[entry.id] = nil
-            end
-        end
-    end
-end
-
--- Iterate equipped items and accumulate stat/skill contributions from both
--- prefix and suffix into the given accumulator tables. Quality is read from
--- each curated entry (default 0.60 for backward-compat entries). The merged
--- result is trimmed to at most MAX_ITEM_STATS total bonuses.
+-- Iterate equipped items and accumulate stat/skill contributions.
+-- Per README_ItemSystem.md "Stat Count Cap": for each item, prefix+suffix
+-- stats are quality-scaled, SAME-NAME bonuses are summed FIRST, then ranked
+-- by value, and only the top MAX_ITEM_STATS survive -- attributes and skills
+-- compete together, exactly as the doc's worked example shows. The skill cap
+-- is NOT applied here; it caps the cross-item TOTAL at query time in
+-- events.GetSkill (see "Skill Bonus Cap" section).
 local function SumCuratedBonuses(player, statAcc, skillAcc)
     if not player or not player["?ptr"] or player["?ptr"] <= 0 then return end
     for i = 0, 15 do
@@ -1110,18 +1125,36 @@ local function SumCuratedBonuses(player, statAcc, skillAcc)
         if itemIdx and itemIdx > 0 and itemIdx <= 138 then
             local itemObj = player.Items[itemIdx]
             if itemObj and itemObj["?ptr"] and itemObj["?ptr"] > 0 then
+                local prefix, suffix = GetCuratedIds(itemObj)
                 local entry = GetCuratedEntry(itemObj)
-                if entry then
-                    local quality = entry.quality or 0.60
-                    local localStat, localSkill = {}, {}
-                    ApplyStats(itemObj, IdToPrefix[entry.prefixId], localStat, localSkill, quality)
-                    ApplyStats(itemObj, IdToSuffix[entry.suffixId], localStat, localSkill, quality)
-                    TrimStats(localStat, localSkill, MAX_ITEM_STATS)
-                    for id, val in pairs(localStat) do
-                        statAcc[id] = (statAcc[id] or 0) + val
+                local quality = (entry and entry.quality) or 0.60
+                -- Sum same-name bonuses across prefix+suffix first...
+                local totals = {}
+                local function collectStats(stats)
+                    if not stats then return end
+                    local filtered = FilterStatsForItem(itemObj, stats)
+                    for k, v in pairs(filtered) do
+                        if StatMap[k] or SkillMap[k] then
+                            local adj = math.max(1, math.floor(v * quality))
+                            totals[k] = (totals[k] or 0) + adj
+                        end
                     end
-                    for id, val in pairs(localSkill) do
-                        skillAcc[id] = (skillAcc[id] or 0) + val
+                end
+                collectStats(prefix and prefix.stats)
+                collectStats(suffix and suffix.stats)
+                -- ...then rank and keep only the top MAX_ITEM_STATS.
+                local ranked = {}
+                for k, v in pairs(totals) do
+                    ranked[#ranked + 1] = { name = k, value = v }
+                end
+                table.sort(ranked, function(a, b) return a.value > b.value end)
+                for idx = 1, math.min(MAX_ITEM_STATS, #ranked) do
+                    local k = ranked[idx].name
+                    local adj = ranked[idx].value
+                    if StatMap[k] then
+                        statAcc[StatMap[k]] = (statAcc[StatMap[k]] or 0) + adj
+                    elseif SkillMap[k] then
+                        skillAcc[SkillMap[k]] = (skillAcc[SkillMap[k]] or 0) + adj
                     end
                 end
             end
@@ -1129,25 +1162,52 @@ local function SumCuratedBonuses(player, statAcc, skillAcc)
     end
 end
 
--- Per-player cache of accumulated curated stat/skill bonuses. Both
--- CalcStatBonusByItems and GetSkill fire once per stat/skill for each player
--- every recalculation pass (dozens of calls per player) — recomputing the
--- full 16-slot equipment scan on every single call was the "make it smooth"
--- problem. Instead we scan once per (player, equipment state) and reuse the
--- result for every stat/skill query in that pass; a cheap signature of the
--- player's equipped-item indices tells us when a real re-scan is needed.
-local BonusCache = {}  -- [PlayerIndex] = { sig = "...", stat = {...}, skill = {...} }
+-- Per-player cache of accumulated curated bonuses. CalcStatBonusByItems and
+-- GetSkill fire once per stat/skill for each player on every recalculation
+-- pass (dozens of calls per player); recomputing the full 16-slot equipment
+-- scan + sort on every single call is the known "character screen stutter"
+-- problem an earlier version solved the same way. A cheap signature of the
+-- equipped-item indexes (+ a global epoch) detects when a real re-scan is
+-- needed. The cache stores UNCAPPED skill totals -- the skill cap depends on
+-- the player's current training and is applied at query time in GetSkill, so
+-- training a skill never serves stale capped values.
+local BonusCache = {}   -- [playerIndex] = { sig = "...", stat = {...}, skill = {...} }
+local CacheEpoch = 0
 
-local function EquipSignature(player)
-    local parts = {}
-    for i = 0, 15 do
-        parts[i + 1] = player.EquippedItems[i] or 0
-    end
-    return table.concat(parts, ",")
+-- Bump whenever entry data changes outside of an equip change (recuration,
+-- salvage, suppression, save load, toggle) -- equipping/unequipping already
+-- changes the signature by itself.
+local function InvalidateBonusCache()
+    CacheEpoch = CacheEpoch + 1
+    BonusCache = {}
 end
 
 local function GetCachedBonuses(player, playerIndex)
-    local sig = EquipSignature(player)
+    if playerIndex == nil then
+        -- No stable cache key: fall back to a direct scan.
+        local statAcc, skillAcc = {}, {}
+        SumCuratedBonuses(player, statAcc, skillAcc)
+        return statAcc, skillAcc
+    end
+    -- Signature must capture item IDENTITY, not just which Items-array slots
+    -- are equipped: swapping an item in place reuses the same slot index, so
+    -- an index-only signature stayed identical and served the OLD item's
+    -- bonuses until gear moved again (playtest report 2026-07-17: "swap
+    -- keeps the previous item's stats until re-equipped"). Number + Charges
+    -- distinguish the occupant (Charges = curated id, unique per item).
+    local parts = { CacheEpoch }
+    for i = 0, 15 do
+        local idx = player.EquippedItems[i] or 0
+        parts[#parts + 1] = idx
+        if idx > 0 and idx <= 138 then
+            local it = player.Items[idx]
+            if it and it["?ptr"] and it["?ptr"] > 0 then
+                parts[#parts + 1] = it.Number or 0
+                parts[#parts + 1] = it.Charges or 0
+            end
+        end
+    end
+    local sig = table.concat(parts, ",")
     local cached = BonusCache[playerIndex]
     if cached and cached.sig == sig then
         return cached.stat, cached.skill
@@ -1174,16 +1234,23 @@ function events.CalcStatBonusByItems(t)
     end
 end
 
--- Hook 2: skill bonuses (fires per-skill for each player, MM7+)
+-- Hook 2: skill bonuses (fires per-skill for each player, MM7+).
+-- Skill Bonus Cap (README_ItemSystem.md): the summed curated bonus for a
+-- skill can never exceed the player's BASE skill level, with a floor of 1 so
+-- even untrained skills get a tiny nudge:
+--   finalBonus = min(curatedTotal, max(playerBaseSkill, 1))
+-- Applied to the cross-item TOTAL here at query time (capping per item, as an
+-- interim version did, lets several items stack past the cap). Applies to ALL
+-- skills routed through SkillMap -- weapon, armor, utility, and magic schools.
 function events.GetSkill(t)
     if not Game.ItemSystemEnabled then return end
     local ok, err = pcall(function()
         if not t.Player then return end
-        local base = t.Result
         local _, skillAcc = GetCachedBonuses(t.Player, t.PlayerIndex)
         local bonus = skillAcc[t.Skill]
-        if bonus and bonus > 0 then
-            t.Result = t.Result + math.min(bonus, math.max(base, 1))
+        if bonus then
+            local baseRank = SplitSkill(t.Player.Skills[t.Skill] or 0)
+            t.Result = t.Result + math.min(bonus, math.max(baseRank, 1))
         end
     end)
     if not ok then
@@ -1191,170 +1258,172 @@ function events.GetSkill(t)
     end
 end
 
--- Hook 3: sell price adjustment for curated items (DISABLED)
--- Native GetValue at 0x453CE7 returns only the base price because
--- item.Bonus/Bonus2 are zeroed. A mem.hookfunction was attempted but
--- caused EAccessViolation crashes (stack corruption from mismatched
--- calling convention). Disabled until a safer approach is found.
--- Curated items currently sell for their base (common) price.
--- Sorted by priority; this is cosmetic, not gameplay-breaking.
-
 -- =============================================================================
--- TOGGLE SYNC — suppress/revert existing items to match Game.ItemSystemEnabled
+-- ITEM VALUE (sell/buy price)
+-- Curated items suppress the vanilla Bonus (=0), so native GetValue prices
+-- them at bare base cost -- reported 2026-07-16. Add a premium reflecting the
+-- item's ACTUAL curated bonuses (works for freshly-generated AND salvaged
+-- items alike, unlike restoring the suppressed vanilla roll -- salvaged items
+-- had no vanilla roll to restore).
 -- =============================================================================
+local GOLD_PER_BONUS_POINT = 100
 
--- Reconciles every party item's suppressed/vanilla state with the current
--- Game.ItemSystemEnabled value. Runs automatically on AfterLoadMap (after
--- LoadMapScripts has restored the menu toggle state from ExSet); call it
--- manually right after flipping the flag for an immediate mid-session effect.
-local function RecoverOrphanedItem(item)
-    local player = RandomPartyMember()
-    if not player then return end
-    local class = player.Class
-    local line  = ClassToLine[class]
-    if not line then return end
-    local bucket    = LineToBucket[line]
-    local tier      = ClassTier[class] or 0
-    local alignment = ClassAlignment[class] or "any"
-    local prefixPool = Pools.Prefixes[bucket]
-    local suffixPool = Pools.Suffixes[line]
-    if not prefixPool or not suffixPool then return end
-    local prefix = SelectPrefix(prefixPool, alignment)
-    local suffix = SelectSuffix(suffixPool, tier, alignment)
-    if not prefix or not suffix then return end
-    local quality = RollQuality(AveragePartyLevel())
-    local id = NewCuratedId()
-    CuratedItems[id] = {
-        prefixId          = prefix._prefixId,
-        suffixId          = suffix._suffixId,
-        itemNumber        = item.Number,
-        origBonus         = 0,
-        origBonusStrength = 0,
-        origBonus2        = 0,
-        quality           = quality,
-    }
-    item.Charges = id
-    Log(Merge.Log.Info, "%s: Recovered orphaned item #%d → \"%s\" + \"%s\" (q=%.2f id=%d)",
-        LogId, item.Number, prefix.name, suffix.name, quality, id)
-end
-
-function SyncItemSystemToggle()
-    if not Party or not Party.Players or not CuratedItems then return end
-
-    if Game.ItemSystemEnabled then
-        -- Re-tag any currently-vanilla item whose (Number, Bonus, BonusStrength,
-        -- Bonus2) still matches a previously recorded curated entry (i.e. it was
-        -- suppressed before, then reverted by a prior toggle-off).
-        local revIndex = {}
-        for id, entry in pairs(CuratedItems) do
-            local key = entry.itemNumber .. "|" .. entry.origBonus .. "|"
-                .. entry.origBonusStrength .. "|" .. (entry.origBonus2 or 0)
-            if not revIndex[key] then
-                revIndex[key] = id
-            end
-        end
-        for _, pl in Party.Players do
-            for slot = 1, 138 do
-                local item = pl.Items[slot]
-                if item and item.Number and item.Number > 0 and CanTagItem(item)
-                and (not item.Charges or item.Charges == 0)
-                and ((item.Bonus and item.Bonus > 0) or (item.Bonus2 and item.Bonus2 > 0)) then
-                    local key = item.Number .. "|" .. item.Bonus .. "|"
-                        .. item.BonusStrength .. "|" .. (item.Bonus2 or 0)
-                    local id = revIndex[key]
-                    if id then
-                        SuppressAndTag(item, id)
-                    end
-                end
-            end
-        end
-        -- Recover orphaned items that have Charges set but no CuratedItems entry
-        -- (e.g. from a prior session whose save data didn't persist the table).
-        for _, pl in Party.Players do
-            for slot = 1, 138 do
-                local item = pl.Items[slot]
-                if item and item.Charges and item.Charges > 0 and CanTagItem(item)
-                and not CuratedItems[item.Charges] then
-                    RecoverOrphanedItem(item)
-                end
-            end
-        end
-    else
-        for _, pl in Party.Players do
-            for slot = 1, 138 do
-                local item = pl.Items[slot]
-                if item and item.Charges and item.Charges > 0 and CanTagItem(item) then
-                    local entry = CuratedItems[item.Charges]
-                    if entry then
-                        RestoreVanilla(item, entry)
-                    else
-                        -- Orphaned: no entry to restore from, just clear Charges
-                        -- so it doesn't show "Charges: N" with the system disabled.
-                        item.Charges = 0
-                    end
-                end
+-- Sum of an item's applied curated bonus values (post-quality, top-N trimmed
+-- -- the SAME set the tooltip shows and SumCuratedBonuses applies).
+local function CuratedBonusSum(item)
+    local entry = GetCuratedEntry(item)
+    if not entry then return 0 end
+    local prefix, suffix = GetItemPrefix(item), GetItemSuffix(item)
+    if not prefix and not suffix then return 0 end
+    local quality = entry.quality or 0.60
+    local totals = {}
+    local function collect(stats)
+        if not stats then return end
+        local filtered = FilterStatsForItem(item, stats)
+        for k, v in pairs(filtered) do
+            if StatMap[k] or SkillMap[k] then
+                totals[k] = (totals[k] or 0) + math.max(1, math.floor(v * quality))
             end
         end
     end
-    BonusCache = {}
-    Log(Merge.Log.Info, "%s: Synced toggle state (enabled=%s).", LogId, tostring(Game.ItemSystemEnabled))
+    collect(prefix and prefix.stats)
+    collect(suffix and suffix.stats)
+    local ranked = {}
+    for _, v in pairs(totals) do ranked[#ranked + 1] = v end
+    table.sort(ranked, function(a, b) return a > b end)
+    local sum = 0
+    for i = 1, math.min(MAX_ITEM_STATS, #ranked) do sum = sum + ranked[i] end
+    return sum
+end
+
+if Game.Version == 8 then
+    -- structs.Item.GetValue @ 0x453CE7: thiscall (ecx=this), no stack args,
+    -- returns eax -> hookfunction convention (1, 0). Disassembly confirms a
+    -- clean hookable entry; the README's note about an earlier crash was a
+    -- technique error -- if this callback throws, the hook trampoline's
+    -- d:ret() is skipped and the stack corrupts (the Town Portal 0x425B1A
+    -- lesson), so EVERY path here is pcall-isolated and always returns a
+    -- number. Additive only: never mutates item fields (no double-apply risk).
+    mem.hookfunction(0x453CE7, 1, 0, function(d, def, this)
+        local vok, base = pcall(def, this)
+        if not vok or type(base) ~= "number" then
+            return type(base) == "number" and base or 0
+        end
+        if not Game.ItemSystemEnabled then return base end
+        local pok, sum = pcall(function()
+            return CuratedBonusSum(structs.Item:new(this))
+        end)
+        if pok and type(sum) == "number" and sum > 0 then
+            return base + sum * GOLD_PER_BONUS_POINT
+        end
+        return base
+    end)
+end
+
+-- =============================================================================
+-- TOGGLE & SYNC
+-- Game.ItemSystemEnabled gates all event handlers.
+-- No item-level changes are needed — toggle just enables/disables
+-- stat/skill application and visual hooks.
+-- =============================================================================
+function SyncItemSystemToggle()
+    InvalidateBonusCache()
+    Log(Merge.Log.Info, "%s: Toggle %s", LogId, Game.ItemSystemEnabled and "ON" or "OFF")
 end
 
 -- =============================================================================
 -- PRUNING
--- Removes CuratedItems entries that no longer correspond to any item the
--- party is carrying, keeping the persisted table from growing forever.
--- Only entries older than PRUNE_GRACE ids (i.e. not from the current batch
--- of recent drops) are eligible, so a freshly generated id can't be swept
--- before it's even had a chance to reach the party's tracked inventory.
--- Items sitting in an unvisited chest/on the ground are NOT seen by this
--- scan and so can be pruned while away — see header "KNOWN LIMITATIONS".
---
--- Only runs while Game.ItemSystemEnabled is true. While disabled,
--- SyncItemSystemToggle has reverted every item and zeroed item.Charges on
--- all of them, so "in use" can't be determined from Charges at all — running
--- this while disabled would see nothing in use and delete every entry,
--- permanently losing the ability to re-associate items when re-enabled.
+-- Removes CuratedItems entries for items no longer in party possession.
 -- =============================================================================
-local PRUNE_GRACE = 50
-
 local function PruneCuratedItems()
     if not Game.ItemSystemEnabled then return end
-    if not Party or not Party.Players or not CuratedItems then return end
-
-    local inUse = {}
-    for _, pl in Party.Players do
+    if not CuratedItems then return end
+    -- HARD GUARD: never prune when the party isn't iterable (startup / main
+    -- menu). An empty scan marks nothing as active, and the loop below would
+    -- then delete EVERY entry -- total curated-data wipe. This exact landmine
+    -- was latent in the composite-key version (caught in the 2026-07-16
+    -- pre-ship audit); only safe to prune with a live party in hand.
+    if not Party or not Party.Players then return end
+    local active = {}
+    local playersSeen = 0
+    for _, player in Party.Players do
+        playersSeen = playersSeen + 1
         for slot = 1, 138 do
-            local item = pl.Items[slot]
-            if item and item.Charges and item.Charges > 0 and CanTagItem(item) then
-                inUse[item.Charges] = true
+            local item = player.Items[slot]
+            if item and item.Number and item.Number > 0 then
+                -- tag-based match (see GetCuratedIdAndEntry): the composite
+                -- key can't identify curated items once bonuses are zeroed
+                local id = item.Charges
+                if id and id > 0 and id < MAX_ENTRY_ID then
+                    active[id] = true
+                end
             end
         end
     end
-
-    local cutoff = NextCuratedId - PRUNE_GRACE
+    if playersSeen == 0 then return end  -- party empty: same wipe risk as above
     local pruned = 0
-    for id in pairs(CuratedItems) do
-        if id < cutoff and not inUse[id] then
+    for id, _ in pairs(CuratedItems) do
+        if not active[id] then
             CuratedItems[id] = nil
             pruned = pruned + 1
         end
     end
     if pruned > 0 then
-        Log(Merge.Log.Info, "%s: Pruned %d stale curated entries.", LogId, pruned)
+        Log(Merge.Log.Info, "%s: Pruned %d stale entries", LogId, pruned)
     end
 end
+
+-- =============================================================================
+-- ITEMSYSTEM INTERNAL — public API for other files
+-- =============================================================================
+ItemSystemInternal = {
+    ClassToLine = ClassToLine,
+    LineToBucket = LineToBucket,
+    ClassTier = ClassTier,
+    ClassAlignment = ClassAlignment,
+    Pools = Pools,
+    SelectPrefix = SelectPrefix,
+    SelectSuffix = SelectSuffix,
+    GetCuratedItems = function() return CuratedItems end,
+    GetCuratedEntry = GetCuratedEntry,
+    InvalidateBonusCache = InvalidateBonusCache,
+    -- Entry-format helpers for zzRepairItems.lua's salvage pass:
+    EntryNumber = EntryNumber,
+    IsEntryResolvable = function(e)
+        return IdToPrefix[EntryPrefixId(e) or -1] ~= nil
+           and IdToSuffix[EntrySuffixId(e) or -1] ~= nil
+    end,
+    -- For the consumable-restore pass (un-curating wrongly-tagged potions):
+    IsCuratableType = IsCuratableType,
+    EntryBonus = EntryBonus,
+    EntryBonusStr = EntryBonusStr,
+    EntryBonus2 = EntryBonus2,
+    GetNextCuratedId = function() return NextCuratedId end,
+    PruneCuratedItems = PruneCuratedItems,
+    FilterStatsForItem = FilterStatsForItem,
+    GetItemRequiredSkill = GetItemRequiredSkill,
+    RandomPartyMember = function(rs) return RandomPartyMember(rs) end,
+    MAX_ITEM_STATS = MAX_ITEM_STATS,
+    StatMap = StatMap,
+    SkillMap = SkillMap,
+    SumCuratedBonuses = SumCuratedBonuses,
+}
 
 -- =============================================================================
 -- INITIALIZATION
 -- =============================================================================
 
-function events.GameInitialized2()
-    BuildIndices()
+-- Bind CuratedItems/NextCuratedId to the CURRENT internal.SaveGameData and
+-- rebuild the reverse index. Called from GameInitialized2 (app startup) AND
+-- from LoadMapScripts on every fresh save load -- the latter is what makes
+-- persistence actually work (see the persistence-bug note below).
+local function BindSaveDataAndRebuild(context)
     local sgd = internal and internal.SaveGameData
-    if sgd and sgd.CuratedItems then
+    -- Type guard: a corrupt/foreign save could carry a non-table under this
+    -- key; pairs() over it below would throw inside an event handler.
+    if sgd and type(sgd.CuratedItems) == "table" then
         CuratedItems  = sgd.CuratedItems
-        NextCuratedId = sgd.NextCuratedId
+        NextCuratedId = tonumber(sgd.NextCuratedId) or 1
     else
         CuratedItems  = {}
         NextCuratedId = 1
@@ -1363,73 +1432,91 @@ function events.GameInitialized2()
             sgd.NextCuratedId = NextCuratedId
         end
     end
-    Log(Merge.Log.Info, "%s: Ready. %d curated entries tracked.", LogId, NextCuratedId - 1)
+    -- Build reverse-index lookup. Entries without a readable item Number
+    -- (broken/legacy formats) are skipped; recuration replaces them.
+    -- Entries without explicit .quality default to 0.60.
+    CuratedItemLookup = {}
+    local total, count = 0, 0
+    for id, entry in pairs(CuratedItems) do
+        total = total + 1
+        -- Repair a stale/low persisted counter (observed: counter 70 with
+        -- entries up to ~172): allocating ids below the existing max would
+        -- silently overwrite live entries, cross-linking items.
+        if type(id) == "number" and id >= NextCuratedId then
+            NextCuratedId = id + 1
+        end
+        if EntryNumber(entry) then
+            if entry.quality == nil then entry.quality = 0.60 end
+            local key = EntryNumber(entry) .. "|" .. (EntryBonus(entry) or 0) .. "|" .. (EntryBonusStr(entry) or 0) .. "|" .. (EntryBonus2(entry) or 0)
+            if not CuratedItemLookup[key] then
+                CuratedItemLookup[key] = id
+            end
+            count = count + 1
+        end
+    end
+    -- TEMPORARY DIAGNOSTIC (2026-07-16): entries round-trip through the save
+    -- as tables but their inner numeric keys read nil afterwards (172 loaded,
+    -- 0 indexable). Dump one failing entry's actual keys/types to pin down
+    -- what the serializer did to them. REMOVE once root-caused.
+    if total > 0 and count == 0 then
+        for id, entry in pairs(CuratedItems) do
+            local parts = {}
+            for k, v in pairs(entry) do
+                parts[#parts + 1] = string.format("[%s %s]=%s %s",
+                    type(k), tostring(k), type(v), tostring(v))
+                if #parts >= 8 then break end
+            end
+            Log(Merge.Log.Info, "%s: [DIAG ENTRY] id(%s)=%s keys: %s",
+                LogId, type(id), tostring(id),
+                #parts > 0 and table.concat(parts, " ") or "<EMPTY TABLE>")
+            break
+        end
+    end
+    InvalidateBonusCache()  -- entry data just changed wholesale
+    Log(Merge.Log.Info, "%s: Ready (%s). %d/%d entries indexable (counter %d).",
+        LogId, context, count, total, NextCuratedId - 1)
 end
 
--- Deferred sync: runs AFTER LoadMapScripts has set Game.ItemSystemEnabled from
--- saved ExSet (menu toggle state). GameInitialized2 fires before ExSet is
--- loaded — syncing there would use the wrong toggle value on save reload.
-function events.AfterLoadMap(WasInGame)
-    if not WasInGame then
-        SyncItemSystemToggle()  -- also clears BonusCache
-    end
-    PruneCuratedItems()
+function events.GameInitialized2()
+    BuildIndices()
+    BindSaveDataAndRebuild("startup")
 end
 
 -- =============================================================================
--- INTERNAL API (shared with other item system files)
+-- PERSISTENCE (the actual fix for "items wiped on every reload")
+-- GameInitialized2 fires ONCE at app startup, BEFORE any save is loaded; the
+-- internal.SaveGameData it sees is then replaced when a save loads. Binding
+-- only there meant reads never saw the real save's entries and writes went
+-- into a discarded table -- every session ever logged "Ready. 0 entries",
+-- items got curated in-memory, and the data evaporated on exit (root cause
+-- of every "curated items wiped" incident; found in the 2026-07-16 audit).
+-- Fix = the same proven pattern MenuExtraSettings/RemoveQBitsAndABitsLimits
+-- use: re-bind from the CURRENT sgd after each fresh save load, and write
+-- into the CURRENT sgd at save time.
+-- NOTE: this handler must run before zzRepairItems.lua's LoadMapScripts
+-- recuration pass; it does, because handlers run in file-load order and
+-- "ItemSystem" sorts before "zzRepairItems".
 -- =============================================================================
-
--- Apply quality multiplier and trim to a name→value stats table (e.g. from
--- prefix/suffix pool entries). Public API for external code that needs to
--- display or inspect quality-adjusted values (tooltip does its own inline
--- version to match SumCuratedBonuses' per-entry quality application).
-local function ApplyQualityAndTrim(item, nameValueTable)
-    local entry = GetCuratedEntry(item)
-    local quality = (entry and entry.quality) or 0.60
-    local adjusted = {}
-    for name, value in pairs(nameValueTable) do
-        local adj = math.max(1, math.floor(value * quality))
-        adjusted[name] = adj
-    end
-    local names = {}
-    for name, value in pairs(adjusted) do
-        names[#names + 1] = { name = name, value = value }
-    end
-    table.sort(names, function(a, b) return a.value > b.value end)
-    local result = {}
-    for i = 1, math.min(MAX_ITEM_STATS, #names) do
-        result[names[i].name] = names[i].value
-    end
-    return result
+function events.LoadMapScripts(WasInGame)
+    if WasInGame then return end
+    BindSaveDataAndRebuild("save load")
+    -- NO auto-prune here: prune only counts PARTY-carried tags as "in use",
+    -- so every entry belonging to curated items sitting in SHOP STOCK or
+    -- chests got deleted on each load (150 of 172 entries destroyed in one
+    -- observed load, 2026-07-16). Entries are tiny; leaks are preferable to
+    -- data loss. Prune remains available manually via RepairItems(true).
+    -- Deliberately NO orphan-clearing here either: zzRepairItems.lua's
+    -- LoadMapScripts pass runs AFTER this (file-load order) and needs stale
+    -- tags intact to re-curate those items; it clears whatever it couldn't
+    -- re-curate at the end of its own pass.
 end
 
--- =============================================================================
--- DEBUG HOOKS
--- Minimal read-only access to this file's locals for
--- Scripts/General/ItemSystemDebug.lua to build test/inspection tools on top
--- of. Not meant to be called during normal play. GetCuratedItems() returns
--- the LIVE table — read it, don't mutate it from outside this file.
--- =============================================================================
-ItemSystemInternal = {
-    Pools               = Pools,
-    ClassToLine         = ClassToLine,
-    ClassTier           = ClassTier,
-    ClassAlignment      = ClassAlignment,
-    LineToBucket        = LineToBucket,
-    StatMap             = StatMap,
-    SkillMap            = SkillMap,
-    SelectPrefix        = SelectPrefix,
-    SelectSuffix        = SelectSuffix,
-    SumCuratedBonuses   = SumCuratedBonuses,
-    PruneCuratedItems   = PruneCuratedItems,
-    GetCuratedEntry     = GetCuratedEntry,
-    GetCuratedItems     = function() return CuratedItems end,
-    GetNextCuratedId    = function() return NextCuratedId end,
-    FilterStatsForItem  = FilterStatsForItem,
-    ItemWeaponSkillId   = ItemWeaponSkillId,
-    ApplyQualityAndTrim = ApplyQualityAndTrim,
-    MAX_ITEM_STATS      = MAX_ITEM_STATS,
-}
+function events.BeforeSaveGame()
+    local sgd = internal and internal.SaveGameData
+    if sgd then
+        sgd.CuratedItems  = CuratedItems
+        sgd.NextCuratedId = NextCuratedId
+    end
+end
 
 Log(Merge.Log.Info, "Init finished: %s", LogId)

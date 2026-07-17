@@ -6,22 +6,14 @@
 --
 -- Mastery progression: auto-promotes with skill level, same thresholds as
 -- Cleave.lua/Guardian.lua/ManaShield.lua (1/4/7/10 -> Normal/Expert/Master/GM).
--- Per-class caps mirror Armsmaster (melee prowess) instead of Learning's own
+-- Per-class caps mirror Guardian (Shield distribution) instead of Learning's own
 -- distribution, same reasoning as Guardian mirroring Shield.
 --
--- Mechanic (designed for this project, not ported from MAW -- MAW's own
--- Retaliation damage formula depends on their calcPowerVitality(), which
--- this project doesn't have, same situation as StatRemix.lua's Luck floor
--- and ManaShield.lua's Mana Shield): after Guardian.lua successfully
--- redirects an attack onto a character (see Guardian.lua's vars.justGuarded
--- marker), that character's next hit on a monster has a 1% per skill point chance
--- (capped 50%) to deal bonus damage: +25% per mastery tier (Normal +25%,
--- Expert +50%, Master +75%, GM +100%). One shot per successful guard,
--- consumed whether the roll succeeds or not.
---
--- Toggle: Game.RetaliationEnabled (default true). Not wired into the Extra
--- Settings UI, same reasoning as Guardian.lua's toggle -- MenuExtraSettings.lua's
--- pixel-positioned layout needs its own pass to add more toggles.
+-- Mechanic: after Guardian.lua successfully redirects an attack onto a character
+-- (see Guardian.lua's vars.lastGuardSlot marker), that character instantly
+-- counterattacks the attacker with their weapon -- melee if guarding a melee
+-- attack, ranged if guarding a ranged/spell attack. Damage scales with mastery;
+-- no chance roll.
 
 local LogId = "Retaliation"
 local MF = Merge.Functions
@@ -31,37 +23,45 @@ local RETALIATION_SKILL = const.Skills.Learning
 
 Game.RetaliationEnabled = (Game.RetaliationEnabled == nil) and true or Game.RetaliationEnabled
 
+local MELEE_DMG_PCT = {[1] = 50, [2] = 75, [3] = 100, [4] = 125}
+local RANGED_DMG_PCT = {[1] = 40, [2] = 60, [3] = 80, [4] = 100}
+
 -- ---------------------------------------------------------------------------
--- UI: rename skill slot 38, set descriptions, mirror Armsmaster's caps
+-- UI: rename skill slot 38, set descriptions, mirror Guardian's caps
 -- ---------------------------------------------------------------------------
 
 function events.GameInitialized2()
     Game.SkillNames[RETALIATION_SKILL] = "Retaliation"
 
     Game.SkillDescriptions[RETALIATION_SKILL] =
-        "Retaliation lets a character strike back hard after successfully " ..
-        "using Guardian to protect an ally. Mastery improves automatically as " ..
-        "skill level rises: level 4 unlocks Expert, level 7 Master, " ..
-        "level 10 Grandmaster. Grants 1%% chance per skill point (max 50%%) " ..
-        "to deal bonus damage on the next hit after a successful Guardian."
+        "Retaliation lets a character instantly counterattack after " ..
+        "successfully using Guardian to protect an ally. Mastery improves " ..
+        "automatically as skill level rises: level 4 unlocks Expert, " ..
+        "level 7 Master, level 10 Grandmaster. Counters with melee weapon " ..
+        "against melee attacks, or ranged weapon against ranged/spell attacks."
 
     Game.SkillDesNormal[RETALIATION_SKILL] =
-        "+25%% damage on a successful Retaliation. Unlocks Expert mastery at level 4."
+        "Counterattack deals 50%% melee / 40%% ranged weapon damage. " ..
+        "Unlocks Expert mastery at level 4."
 
     Game.SkillDesExpert[RETALIATION_SKILL] =
-        "+50%% damage on a successful Retaliation. Unlocks Master mastery at level 7."
+        "Counterattack deals 75%% melee / 60%% ranged weapon damage. " ..
+        "Unlocks Master mastery at level 7."
 
     Game.SkillDesMaster[RETALIATION_SKILL] =
-        "+75%% damage on a successful Retaliation. Unlocks Grandmaster mastery at level 10."
+        "Counterattack deals 100%% melee / 80%% ranged weapon damage. " ..
+        "Unlocks Grandmaster mastery at level 10."
 
     Game.SkillDesGM[RETALIATION_SKILL] =
-        "+100%% (double) damage on a successful Retaliation."
+        "Counterattack deals 125%% melee / 100%% ranged weapon damage."
 
+    -- Mirror Guardian's distribution so Retaliation matches who can guard.
+    -- Guardian.lua (loaded first alphabetically) populates slot 24 already.
     local classCount = Game.Classes.Skills.count
     for classId = 0, classCount - 1 do
         local skills = Game.Classes.Skills[classId]
         if skills then
-            skills[RETALIATION_SKILL] = math.max(skills[const.Skills.Armsmaster], 1)
+            skills[RETALIATION_SKILL] = skills[const.Skills.IdentifyItem] or 0
         end
     end
 end
@@ -125,38 +125,39 @@ function events.GetSkill(t)
 end
 
 -- ---------------------------------------------------------------------------
--- Combat: bonus damage on the hit after a successful Guardian
+-- Combat: instant counterattack after a successful Guardian
 -- ---------------------------------------------------------------------------
 
-local BONUS_PER_MASTERY = 0.25
-
-local function FindPartySlot(player)
-    local id = player:GetIndex()
-    for i = 0, Party.High do
-        if Party[i]:GetIndex() == id then
-            return i
-        end
-    end
-    return nil
-end
-
-function events.CalcDamageToMonster(t)
+function events.PlayerAttacked(t)
     if not Game.RetaliationEnabled then return end
-    if not (t.ByPlayer and t.Player) then return end
-    if not t.Result or t.Result <= 0 then return end
-    if not vars.justGuarded then return end
+    if not t.Attacker or not t.Attacker.Monster then return end
+    if not vars.lastGuardSlot then return end
 
-    local slot = FindPartySlot(t.Player)
-    if not slot or not vars.justGuarded[slot] then return end
-    vars.justGuarded[slot] = nil
+    local slot = vars.lastGuardSlot
+    vars.lastGuardSlot = nil
 
-    local s, m = SplitSkill(t.Player.Skills[RETALIATION_SKILL])
+    local player = Party[slot]
+    if not player or not player:IsConscious() then return end
+
+    local s, m = SplitSkill(player.Skills[RETALIATION_SKILL])
     if s <= 0 then return end
 
-    local chance = math.min(s * 0.01, 0.50)
-    if chance <= math.random() then return end
+    local action = t.Attacker.MonsterAction
+    local useRanged = (action ~= 0 and action ~= 1)
 
-    t.Result = math.floor(t.Result * (1 + BONUS_PER_MASTERY * m))
+    local dmgMin, dmgMax
+    if useRanged then
+        dmgMin, dmgMax = player:GetRangedDamageMin(), player:GetRangedDamageMax()
+    else
+        dmgMin, dmgMax = player:GetMeleeDamageMin(), player:GetMeleeDamageMax()
+    end
+    if not dmgMin or dmgMin <= 0 then return end
+
+    local pct = useRanged and (RANGED_DMG_PCT[m] or 100) or (MELEE_DMG_PCT[m] or 100)
+    local dmg = math.max(1, math.floor(math.random(dmgMin, dmgMax) * pct / 100))
+
+    Game.ShowStatusText(player.Name .. " retaliates for " .. dmg .. " damage!")
+    t.Attacker.Monster:CalcTakenDamage(const.Damage.Phys, dmg)
 end
 
 MF.LogInit2(LogId)

@@ -94,6 +94,7 @@ function events.CalcDamageToMonster(t)
 
     -- Result is already post-defense; scale the weapon's pre-defense range
     -- by this hit's own defense-reduction ratio before flooring.
+    if not t.Damage or t.Damage == 0 then return end
     local reduction = t.Result / t.Damage
     local floorDamage = floor((dmgMin + (dmgMax - dmgMin) * fraction) * reduction)
     if t.Result < floorDamage then

@@ -56,7 +56,7 @@ function events.GameInitialized2()
         "that would otherwise bring them dangerously low on hit points. " ..
         "Mastery improves automatically as skill level rises: " ..
         "level 4 unlocks Expert, level 7 Master, level 10 Grandmaster. " ..
-        "Press M (on the Stats tab) to enable/disable this character's Mana Shield."
+        "Press N to toggle Mana Shield for this character."
 
     Game.SkillDesNormal[MANA_SHIELD_SKILL] =
         "Absorbs 1 damage per spell point spent, when a hit would bring HP " ..
@@ -71,11 +71,17 @@ function events.GameInitialized2()
     Game.SkillDesGM[MANA_SHIELD_SKILL] =
         "Absorbs 4 damage per spell point."
 
+    -- Remove from classes without mana (no SP). Monks keep it (promos grant mana).
     local classCount = Game.Classes.Skills.count
     for classId = 0, classCount - 1 do
         local skills = Game.Classes.Skills[classId]
         if skills then
-            skills[MANA_SHIELD_SKILL] = math.max(skills[const.Skills.Meditation], 1)
+            if (classId >= 44 and classId <= 51)     -- Knight line (no SP)
+            or (classId >= 92 and classId <= 99) then -- Barbarian line (no SP)
+                skills[MANA_SHIELD_SKILL] = 0
+            else
+                skills[MANA_SHIELD_SKILL] = skills[const.Skills.Meditation] or 0
+            end
         end
     end
 end
@@ -115,6 +121,19 @@ local function SyncManaShieldMastery(player)
     if level < 1 then return end
     local expected = MasteryFromLevel(level)
 
+    -- Cap by highest magic school mastery
+    local maxSchoolMastery = 0
+    for _, school in ipairs(MAGIC_SCHOOLS) do
+        local _, mastery = SplitSkill(player.Skills[school])
+        if mastery and mastery > maxSchoolMastery then
+            maxSchoolMastery = mastery
+        end
+    end
+    if maxSchoolMastery > 0 and expected > maxSchoolMastery then
+        expected = maxSchoolMastery
+    end
+
+    -- Cap by per-class limit (mirrors Meditation's distribution)
     local playerClass = player.Class
     if playerClass then
         local classMax = Game.Classes.Skills[playerClass][MANA_SHIELD_SKILL]
@@ -133,6 +152,11 @@ function events.GetSkill(t)
     if t.Skill ~= MANA_SHIELD_SKILL or not t.Player then return end
 
     SyncManaShieldMastery(t.Player)
+
+    local msLevel, msMastery = SplitSkill(t.Player.Skills[MANA_SHIELD_SKILL])
+    if msLevel and msLevel > 0 then
+        return
+    end
 
     local best = 0
     for _, school in ipairs(MAGIC_SCHOOLS) do
@@ -159,11 +183,7 @@ end
 
 function events.KeyDown(t)
     if not Game.ManaShieldEnabled then return end
-    if t.Key ~= const.Keys.M then return end
-    if Game.CurrentScreen ~= const.Screens.Inventory or Game.CurrentCharScreen ~= const.CharScreens.Stats then
-        return
-    end
-
+    if t.Key ~= const.Keys.N then return end
     EnsureManaShieldTable()
     local index = Game.CurrentPlayer
     if index < 0 then return end

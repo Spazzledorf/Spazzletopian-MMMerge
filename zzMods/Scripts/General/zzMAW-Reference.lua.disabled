@@ -406,3 +406,48 @@
 --   Some stat labels (Armor Class, Spirit Resistance) are NOT in GlobalTxt.
 --   They are hardcoded in the game's rendering code and cannot be colored
 --   via this method — would need a binary patch or DrawText hook instead.
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 7. PARTY-WIDE BUFFS (PlayerSpellProc + Tick copy)
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- [PATTERN] Making a single-target buff spell affect the whole party at Expert+:
+--   Trying to replicate the native duration formula (Var1 * edi + Var2) is
+--   fragile because edi varies by game version. Instead:
+--
+--   1. PlayerSpellProc -- record buffIdx + caster when qualifying spell is
+--      cast at Expert+ (mastery >= 2). Clear pending_* when the spell matches
+--      but is ineligible (Normal mastery, no buff mapping).
+--   2. Tick (next frame) -- copy the caster's SpellBuffs[buffIdx] (already
+--      set correctly by native code) to every other party member via direct
+--      struct field writes.
+--
+--   Pitfalls:
+--   - Party.Count (uppercase) is nil; use Party.High + 1.
+--   - Monster-cast spells set Caster=38+; Party.PlayersArray[38] errors
+--     out-of-bounds but pcall catches it silently. Don't add a Party.High
+--     guard or it blocks the monster call AND the player call never comes.
+--   - `local function foo()` defined AFTER its call site = nil at call time.
+--   - Direct struct field writes work; :Set() method has unknown signature.
+--   - SpellsTxt[ID].Expert etc are EditPChar fields; string concat works.
+--   - val:find("Party%-wide") prevents duplicate tooltip appends on F10.
+--
+--   File: Scripts/General/zzPartyBuffs.lua
+--   Toggle: Game.AutoHealEnabled (shared with Smart Heal Targeting)
+--
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- 8. XP MULTIPLIER (MonsterKillExp + Tick scanner)
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- [PATTERN] Scale all XP (kill + quest) by configurable multiplier:
+--   Three layers to catch every XP path:
+--   a) events.MonsterKillExp -- kill XP, modify t.Exp directly
+--   b) evt.Add wrapper -- Lua-scripted quest events via evt and ctx
+--   c) events.Tick scanner -- native quest XP (compare delta vs expected)
+--
+--   Two independent toggles in Extra Settings page 5:
+--   - Kill XP (Game.XpMultiplierEnabled, default ON x2)
+--   - Quest XP (Game.XpQuestMultiplierEnabled, default OFF x2)
+--   Both use math.floor for integer multiplication.
+--
+--   File: Scripts/General/zzXpMultiplier.lua

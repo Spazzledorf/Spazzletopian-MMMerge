@@ -284,9 +284,9 @@ Scripts/General/
                                 replacing the native "Charges: N" line. Now
                                 displays quality-adjusted and trimmed values
                                 to match what actually applies.
-  ItemSystemDebug.lua        ← Console test tool (ItemTest.*). Not loaded
-                                differently from the others -- always active,
-                                but does nothing unless you call it.
+  ItemSystemDebug.lua        ← Console test tool (ItemTest.*). Ships with the
+                                SOURCE only, not the release zip. Harmless if
+                                present -- does nothing unless you call it.
   StatTooltips.lua           ← Pre-existing file (not part of this system),
                                 extended with one addition -- see "Core
                                 Attribute Display Gap" below.
@@ -315,7 +315,7 @@ Scripts/General/
 - **Skill bonus cap:** curated skill bonuses are capped at the player's base skill level so items complement training instead of replacing it — see [Skill Bonus Cap — Progression Friendly](#skill-bonus-cap--progression-friendly) above.
 - **Pruning:** stale `CuratedItems` entries (items no longer in the party's possession) are cleared out on game load, with a grace window so freshly-dropped items can't be swept before they're even picked up. Items sitting in an unvisited chest or on the ground at prune time can lose their entry while away — picking them back up later just makes them a plain item again, not a crash. Pruning only runs while the toggle is on — while it's off, every item has been reverted and its `Charges` tag cleared, so there's no way to tell "still owned but reverted" apart from "gone"; running the prune sweep in that state would have deleted every entry and made re-enabling permanently unable to restore anything.
 - **Weapon-skill filter:** a weapon can only ever benefit from *its own* weapon skill — a Mace boosting Sword skill made no sense, since equipping a Mace never uses Sword skill. `ApplyStats`/`FilterStatsForItem` drop any of the 8 weapon-skill stats (Sword/Axe/Mace/Dagger/Staff/Spear/Bow/Unarmed) that don't match the equipped item's own weapon skill, read from `item:T().Skill`, cross-checked against `item:T().EquipStat` (only items that actually equip in a weapon category — melee 1H/2H/ranged — are restricted at all; rings, armor, gauntlets, amulets, belts, boots are never touched by this filter regardless of what stats they roll). Suffix/prefix *selection* stays independent of base item type — a Mace can still roll "the Knight" for flavor — but the mismatched stat just won't apply or display. One deliberate exception: Staff and Unarmed are treated as compatible (Monks train in both), so a Staff can grant both; every other pairing requires an exact match. This same filter is shared with the tooltip display (`ItemSystemTooltip.lua`) via `ItemSystemInternal.FilterStatsForItem`, so the tooltip can never *claim* a bonus that isn't actually applying.
-- **Sell price:** `structs.Item:GetValue` returns only base price for curated items (item.Bonus is 0). A `mem.hookfunction` approach caused crashes and is disabled — curated items currently sell at common-item base price. Not a priority fix (cosmetic, not gameplay).
+- **Sell price:** curated items suppress `item.Bonus` (=0), so native `structs.Item.GetValue` prices them at bare base cost. Fixed 2026-07 by hooking `GetValue` (MM8 `0x453CE7`, a clean thiscall entry confirmed by disassembly) and ADDING a premium of `GOLD_PER_BONUS_POINT × (sum of the item's applied curated bonuses)` — additive, never mutates item fields. The earlier `mem.hookfunction` crash was a technique error (an unhandled throw in the callback skips the trampoline's `d:ret()` and corrupts the stack, the same class as the Town Portal `0x425B1A` bug); every path in the current hook is `pcall`-isolated and always returns a number. Works for salvaged items too (priced by current curated bonuses, not a stored vanilla roll).
 
 ### Name display (`ItemSystemDisplay.lua`) — confirmed working in-game
 
@@ -338,6 +338,10 @@ Fix applied: `StatTooltips.lua` now `GetCuratedBonus(pl, statName)` which calls 
 **Note on `ItemTest.DumpPlayerBonuses`:** this console helper calls `SumCuratedBonuses` directly, bypassing the per-player equipment cache — if it shows no bonuses, the item's `Charges` tag may have been cleared (e.g. by a toggle-off event). Check `ItemTest.DumpInventory(0)` to confirm the item's Charges/tag state, then toggle the item system off and back on (or call `SyncItemSystemToggle()`) to re-tag. This is not a runtime bug — `CalcStatBonusByItems` and `GetSkill` use the cached path and will show the correct bonus in-game as long as `Game.ItemSystemEnabled` is true.
 
 ### Testing (`ItemSystemDebug.lua`)
+
+> This tool ships with the **source repository**, not the player release zip
+> (it's a development aid). If you installed from the zip and want it, grab
+> `ItemSystemDebug.lua` from the source.
 
 Console-callable helpers (`ItemTest.*`, via the debug console — Ctrl+F1) for exercising each piece independently: pool/class mapping, real item generation, inspection, toggle round-trip, and pruning. See the file's own header for the full command list.
 

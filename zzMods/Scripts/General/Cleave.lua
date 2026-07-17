@@ -15,10 +15,9 @@ MF.LogInit1(LogId)
 local floor, sqrt = math.floor, math.sqrt
 
 local CLEAVE_RANGE   = 600
-local CLEAVE_DMG_PCT = 60
 
+local DMG_BASE_BY_MASTERY = {40, 50, 60, 70}
 local ExtraTargets = {1, 2, 3, 5}
-local MASTERY_THRESH = {1, 4, 7, 10}  -- Normal, Expert, Master, GM
 
 -- Thresholds indexed by mastery (1-indexed): mastery N unlocks at MASTERY_THRESH[N]
 local function MasteryFromLevel(level)
@@ -41,7 +40,7 @@ local function SyncCleaveMastery(player)
     -- Cap by class max mastery (inherited from the game's class-skills table)
     local playerClass = player.Class
     if playerClass then
-        local classMax = Game.Classes.Skills[playerClass][const.Skills.Stealing]
+        local classMax = Game.Classes.Skills[playerClass][const.Skills.Armsmaster]
         if classMax and classMax > 0 and expected > classMax then
             expected = classMax
         end
@@ -65,33 +64,37 @@ function events.GameInitialized2()
         "Melee hits sweep through nearby enemies for reduced damage. " ..
         "Mastery improves automatically as skill level rises: " ..
         "level 4 unlocks Expert, level 7 Master, level 10 Grandmaster. " ..
-        "Cleave damage starts at 60%% of the triggering hit at Normal mastery " ..
-        "and gains +1%% per extra skill point, up to 100%%."
+        "Cleave damage starts at 40%% base (Normal) scaling up to 70%% base " ..
+        "(GM), plus +1%% per extra skill point, up to 100%%."
 
     Game.SkillDesNormal[36] =
-        "Sweeps through 1 additional nearby enemy for 60%% damage plus +1%% per " ..
-        "skill point (max 100%%). Reach 600. " ..
+        "Sweeps through 1 additional nearby enemy. " ..
+        "40%% base damage plus +1%% per skill point (max 100%%). Reach 600. " ..
         "Unlocks Expert mastery at level 4."
 
     Game.SkillDesExpert[36] =
         "Arc widens to catch 2 additional enemies. " ..
-        "Base damage rises to 60%% plus +1%% per point. " ..
+        "Base damage rises to 50%% plus +1%% per point. " ..
         "Unlocks Master mastery at level 7."
 
     Game.SkillDesMaster[36] =
-        "3 additional enemies struck at 60%% plus +1%% per point. " ..
+        "3 additional enemies struck. " ..
+        "Base damage rises to 60%% plus +1%% per point. " ..
         "Unlocks Grandmaster mastery at level 10."
 
     Game.SkillDesGM[36] =
-        "5 additional enemies struck at 60%% plus +1%% per point. " ..
+        "5 additional enemies struck. " ..
+        "70%% base damage plus +1%% per skill point. " ..
         "The warrior becomes a hurricane of steel."
 
-    -- Grant Normal Cleave to every class so the skill is learnable
+    -- Mirror Armsmaster's per-class availability so Cleave mastery matches a
+    -- melee combat skill rather than the thief skill it replaced.
+    -- Only classes with Armsmaster access gain Cleave — no blanket Normal.
     local classCount = Game.Classes.Skills.count
     for classId = 0, classCount - 1 do
         local skills = Game.Classes.Skills[classId]
-        if skills and skills[36] == 0 then
-            skills[36] = 1
+        if skills then
+            skills[36] = skills[const.Skills.Armsmaster] or 0
         end
     end
 
@@ -151,10 +154,11 @@ function events.CalcDamageToMonster(t)
     if not t.Player or not t.Monster then return end
     if t.Result <= 0 then return end
 
-    local mastery = SyncCleaveMastery(t.Player)
+    local mastery, skillLevel = SyncCleaveMastery(t.Player)
     if not mastery or mastery < 1 then return end
 
-    local cleaveDmg = floor(t.Result * CLEAVE_DMG_PCT / 100)
+    local dmgPct = math.min((DMG_BASE_BY_MASTERY[mastery] or 40) + (skillLevel or 0), 100)
+    local cleaveDmg = floor(t.Result * dmgPct / 100)
     if cleaveDmg < 1 then return end
 
     local numExtra = ExtraTargets[mastery]

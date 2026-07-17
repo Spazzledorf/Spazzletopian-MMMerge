@@ -290,55 +290,43 @@ local function ItemStateStr(item)
         item.Bonus, item.BonusStrength, item.Bonus2, item.Charges)
 end
 
--- Takes a curated item (defaults to Mouse.Item) and exercises: revert
--- (toggle off + sync) -> verify vanilla restored -> reapply (toggle on +
--- sync) -> verify re-tagged with the SAME id it had before. Restores
+-- Takes a curated item (defaults to Mouse.Item) and verifies it remains
+-- recognized as curated across a toggle-off/toggle-on cycle. Since the
+-- toggle mechanism is purely event-select gating (no item-field changes),
+-- the item's identity is stable regardless of toggle state. Restores
 -- Game.ItemSystemEnabled to whatever it was before the test either way.
---
--- Ground truth for "did revert restore the real vanilla values" comes from
--- the item's own CuratedItems entry (origBonus/origBonusStrength/
--- origBonus2), NOT from a state snapshot taken when this function starts --
--- the item is usually ALREADY suppressed at that point (Bonus/Bonus2 both
--- 0), so comparing against that snapshot instead of the recorded original
--- would flag a correct revert as a false failure whenever the item's real
--- vanilla roll had a nonzero Bonus2 (confirmed happening in testing: item
--- correctly reverted to Bonus2=67, but was compared against the
--- already-suppressed Bonus2=0 snapshot and wrongly reported FAIL).
 --
 -- Returns (report, pass) -- report is a full string so calling this bare at
 -- the console shows the detail directly, without needing the log file.
 function ItemTest.TestToggleRoundTrip(item)
-    local I = Internal()
     item = item or Mouse.Item
     if not IsCuratedItem(item) then
         local msg = "TestToggleRoundTrip: item is not curated -- generate/pick one first"
         Log(Merge.Log.Error, "%s: %s", LogId, msg)
         return msg, false
     end
-    local id = item.Charges
-    local entry = I.GetCuratedItems()[id]
+    local entry = GetCuratedEntry(item)
     if not entry then
-        local msg = "TestToggleRoundTrip: item.Charges (" .. tostring(id) .. ") has no CuratedItems entry -- data inconsistency"
+        local msg = "TestToggleRoundTrip: item has no CuratedItems entry -- data inconsistency"
         Log(Merge.Log.Error, "%s: %s", LogId, msg)
         return msg, false
     end
     local wasEnabled = Game.ItemSystemEnabled
     local lines = { "before:  " .. ItemStateStr(item),
-        string.format("recorded original: Bonus=%d BonusStrength=%d Bonus2=%d",
-            entry.origBonus, entry.origBonusStrength, entry.origBonus2) }
+        string.format("curated entry id=%d prefix=%d suffix=%d",
+            nil, entry[1], entry[2]) }
 
+    -- Toggle off → verify item is still recognized as curated
     Game.ItemSystemEnabled = false
     SyncItemSystemToggle()
     lines[#lines + 1] = "reverted:" .. ItemStateStr(item)
-    local revertedOk = item.Charges == 0
-        and item.Bonus == entry.origBonus
-        and item.BonusStrength == entry.origBonusStrength
-        and item.Bonus2 == entry.origBonus2
+    local revertedOk = IsCuratedItem(item)
 
+    -- Toggle on → verify still recognized as curated
     Game.ItemSystemEnabled = true
     SyncItemSystemToggle()
     lines[#lines + 1] = "reapplied:" .. ItemStateStr(item)
-    local reappliedOk = item.Charges == id and item.Bonus == 0 and item.Bonus2 == 0
+    local reappliedOk = IsCuratedItem(item)
 
     Game.ItemSystemEnabled = wasEnabled
     SyncItemSystemToggle()

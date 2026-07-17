@@ -210,10 +210,15 @@ M.Suffixes = {
     -- UNIQUE: Plate GM, Shield GM, Sword GM, Spear GM
     -- -------------------------------------------------------------------------
     KnightLine = {
-        { name = "the Knight",       stats = { Sword=2, Shield=2, Endurance=1 },              tier=0, alignment="any"   },
-        { name = "the Cavalier",     stats = { Plate=2, Spear=2, Chain=1, Endurance=4 },       tier=1, alignment="any"   },
-        { name = "the Champion",     stats = { Plate=3, Shield=3, Might=6, HP=12 },            tier=2, alignment="light" },
-        { name = "the Black Knight", stats = { Plate=3, Sword=3, Might=6, Endurance=5 },       tier=2, alignment="dark"  },
+        { name = "the Knight",       stats = { Sword=2, Endurance=5 },                                tier=0, alignment="any"   },
+        { name = "the Knight",       stats = { Shield=2, Endurance=5 },                               tier=0, alignment="any"   },
+        { name = "the Cavalier",     stats = { Plate=2, Endurance=6 },                                tier=1, alignment="any"   },
+        { name = "the Cavalier",     stats = { Spear=2, Endurance=6 },                                tier=1, alignment="any"   },
+        { name = "the Cavalier",     stats = { Chain=1, Endurance=6 },                                tier=1, alignment="any"   },
+        { name = "the Champion",     stats = { Plate=3, Might=8, HP=12 },                             tier=2, alignment="light" },
+        { name = "the Champion",     stats = { Shield=3, Might=8, HP=12 },                            tier=2, alignment="light" },
+        { name = "the Black Knight", stats = { Plate=3, Might=8, Endurance=5 },                       tier=2, alignment="dark"  },
+        { name = "the Black Knight", stats = { Sword=3, Might=8, Endurance=5 },                       tier=2, alignment="dark"  },
     },
 
     -- -------------------------------------------------------------------------
@@ -221,32 +226,34 @@ M.Suffixes = {
     -- UNIQUE: Regeneration GM (no other class reaches this)
     -- -------------------------------------------------------------------------
     BarbarianLine = {
-        { name = "the Barbarian",    stats = { Axe=2, Regeneration=3, HP=8 },                  tier=0, alignment="any" },
-        { name = "the Berserker",    stats = { Axe=3, Regeneration=4, Endurance=5 },           tier=1, alignment="any" },
-        { name = "the Warmonger",    stats = { Axe=4, Regeneration=7, Endurance=7 },           tier=2, alignment="any" },
+        { name = "the Barbarian",    stats = { Axe=2, Might=5, HP=8 },                                tier=0, alignment="any" },
+        { name = "the Barbarian",    stats = { Regeneration=3, Might=5, HP=8 },                       tier=0, alignment="any" },
+        { name = "the Berserker",    stats = { Axe=3, Might=5, Endurance=5 },                         tier=1, alignment="any" },
+        { name = "the Berserker",    stats = { Regeneration=4, Might=5, Endurance=5 },                tier=1, alignment="any" },
+        { name = "the Warmonger",    stats = { Axe=4, Might=7, Endurance=7 },                         tier=2, alignment="any" },
+        { name = "the Warmonger",    stats = { Regeneration=7, Might=7, Endurance=7 },                tier=2, alignment="any" },
     },
 
     -- -------------------------------------------------------------------------
     -- ARCHER LINE (Hybrid Intellect bucket)
     -- UNIQUE: Bow GM, Perception GM
-    -- NOTE: Perception [CAP] — stays at +1 regardless of tier
     -- -------------------------------------------------------------------------
     ArcherLine = {
-        { name = "the Archer",        stats = { Bow=2, Perception=1, Accuracy=2 },             tier=0, alignment="any"   },
-        { name = "the Warrior Mage",  stats = { Bow=3, Perception=1, Intellect=5 },            tier=1, alignment="any"   },
-        { name = "the Master Archer", stats = { Bow=4, Perception=1, Accuracy=3, Light=1 },    tier=2, alignment="light" },
-        { name = "the Sniper",        stats = { Bow=4, Perception=1, Accuracy=4, Dark=1 },     tier=2, alignment="dark"  },
+        { name = "the Archer",        stats = { Bow=2, Accuracy=5 },                                  tier=0, alignment="any"   },
+        { name = "the Warrior Mage",  stats = { Bow=3, Intellect=7 },                                 tier=1, alignment="any"   },
+        { name = "the Master Archer", stats = { Bow=4, Accuracy=5, Light=1 },                         tier=2, alignment="light" },
+        { name = "the Sniper",        stats = { Bow=4, Accuracy=5, Dark=1 },                          tier=2, alignment="dark"  },
     },
 
     -- -------------------------------------------------------------------------
     -- DEERSLAYER LINE (Hybrid Intellect bucket)
     -- UNIQUE: Merchant GM, DisarmTrap GM
-    -- NOTE: Merchant [CAP] — stays at +1 regardless of tier
     -- -------------------------------------------------------------------------
     DeerslayerLine = {
-        { name = "the Deerslayer",   stats = { Bow=2, DisarmTrap=2, Merchant=1 },              tier=0, alignment="any" },
-        { name = "the Pioneer",      stats = { Bow=3, Merchant=1, Fire=1, Earth=1 },           tier=1, alignment="any" },
-        { name = "the Pathfinder",   stats = { Bow=4, Merchant=1, Fire=2, Air=1, Water=1, Earth=1 }, tier=2, alignment="any" },
+        { name = "the Deerslayer",   stats = { Bow=2, Accuracy=4, Speed=3 },                          tier=0, alignment="any" },
+        { name = "the Deerslayer",   stats = { DisarmTrap=2, Accuracy=4, Speed=3 },                   tier=0, alignment="any" },
+        { name = "the Pioneer",      stats = { Bow=3, Intellect=5, Fire=1, Earth=1 },                 tier=1, alignment="any" },
+        { name = "the Pathfinder",   stats = { Bow=4, Intellect=8, Fire=1, Air=1, Water=1, Earth=1 }, tier=2, alignment="any" },
     },
 
     -- -------------------------------------------------------------------------
@@ -254,21 +261,23 @@ M.Suffixes = {
     -- UNIQUE: Dagger GM, DisarmTrap GM
     -- -------------------------------------------------------------------------
     ThiefLine = {
-        { name = "the Thief",        stats = { DisarmTrap=2, Perception=2, Dagger=1 },         tier=0, alignment="any"   },
-        { name = "the Rogue",        stats = { Dagger=3, DisarmTrap=3, Speed=4 },              tier=1, alignment="any"   },
-        { name = "the Spy",          stats = { Dagger=4, DisarmTrap=4, Luck=7 },               tier=2, alignment="light" },
-        { name = "the Assassin",     stats = { Dagger=4, Luck=4, Speed=7 },                    tier=2, alignment="dark"  },
+        { name = "the Thief",        stats = { Dagger=2, Speed=4, Luck=4, Accuracy=3 },               tier=0, alignment="any"   },
+        { name = "the Rogue",        stats = { Dagger=3, Speed=6, Luck=4, Accuracy=3 },               tier=1, alignment="any"   },
+        { name = "the Spy",          stats = { Dagger=4, Luck=9, Accuracy=4 },                        tier=2, alignment="light" },
+        { name = "the Assassin",     stats = { Dagger=4, Speed=9, Accuracy=4 },                       tier=2, alignment="dark"  },
     },
 
     -- -------------------------------------------------------------------------
     -- PALADIN LINE (Hybrid Personality bucket)
-    -- UNIQUE: Mace GM, Shield GM, Repair GM
+    -- UNIQUE: Mace GM, Shield GM
     -- -------------------------------------------------------------------------
     PaladinLine = {
-        { name = "the Paladin",      stats = { Mace=2, Shield=2, Personality=4, Spirit=1 },    tier=0, alignment="any"   },
-        { name = "the Crusader",     stats = { Mace=3, Shield=3, Repair=2, Personality=5 },    tier=1, alignment="any"   },
-        { name = "the Hero",         stats = { Mace=4, Repair=3, Light=2, Personality=6 },     tier=2, alignment="light" },
-        { name = "the Villain",      stats = { Mace=4, Repair=3, Dark=2, Personality=6 },      tier=2, alignment="dark"  },
+        { name = "the Paladin",      stats = { Mace=2, Personality=5, Spirit=1, Might=3, Endurance=3 },   tier=0, alignment="any"   },
+        { name = "the Paladin",      stats = { Shield=2, Personality=5, Spirit=1, Might=3, Endurance=3 }, tier=0, alignment="any"   },
+        { name = "the Crusader",     stats = { Mace=3, Personality=6, Might=4, Endurance=4 },              tier=1, alignment="any"   },
+        { name = "the Crusader",     stats = { Shield=3, Personality=6, Might=4, Endurance=4 },            tier=1, alignment="any"   },
+        { name = "the Hero",         stats = { Mace=4, Personality=8, Light=2, Might=5, Endurance=5 },    tier=2, alignment="light" },
+        { name = "the Villain",      stats = { Mace=4, Personality=8, Dark=2, Might=5, Endurance=5 },     tier=2, alignment="dark"  },
     },
 
     -- -------------------------------------------------------------------------
@@ -277,10 +286,15 @@ M.Suffixes = {
     --   No other class can grandmaster any of these three skills.
     -- -------------------------------------------------------------------------
     MonkLine = {
-        { name = "the Monk",         stats = { Unarmed=2, Dodge=3 },                                           tier=0, alignment="any"   },
-        { name = "the Initiate",     stats = { Unarmed=3, Dodge=3, Spirit=1, Mind=1, Body=1 },                 tier=1, alignment="any"   },
-        { name = "the Master",       stats = { Unarmed=4, Dodge=4, Bodybuilding=3, HP=12 },                    tier=2, alignment="light" },
-        { name = "the Ninja",        stats = { Unarmed=4, Dodge=4, Speed=8, Dark=1 },                          tier=2, alignment="dark"  },
+        { name = "the Monk",         stats = { Unarmed=2, Endurance=5, Speed=3, Might=3 },                                tier=0, alignment="any"   },
+        { name = "the Monk",         stats = { Dodge=3, Endurance=5, Speed=3, Might=3 },                                  tier=0, alignment="any"   },
+        { name = "the Initiate",     stats = { Unarmed=3, Speed=5, Spirit=1, Mind=1, Body=1, Might=3 },                   tier=1, alignment="any"   },
+        { name = "the Initiate",     stats = { Dodge=3, Speed=5, Spirit=1, Mind=1, Body=1, Might=3 },                     tier=1, alignment="any"   },
+        { name = "the Master",       stats = { Unarmed=4, Endurance=5, HP=12, Might=5 },                                  tier=2, alignment="light" },
+        { name = "the Master",       stats = { Dodge=4, Endurance=5, HP=12, Might=5 },                                    tier=2, alignment="light" },
+        { name = "the Master",       stats = { Bodybuilding=3, Endurance=5, HP=12, Might=5 },                             tier=2, alignment="light" },
+        { name = "the Ninja",        stats = { Unarmed=4, Speed=9, Dark=1, Luck=3, Might=5 },                             tier=2, alignment="dark"  },
+        { name = "the Ninja",        stats = { Dodge=4, Speed=9, Dark=1, Luck=3, Might=5 },                               tier=2, alignment="dark"  },
     },
 
     -- -------------------------------------------------------------------------
@@ -288,21 +302,22 @@ M.Suffixes = {
     -- Uses Body/Mind/Spirit (Personality schools)
     -- -------------------------------------------------------------------------
     VampireLine = {
-        { name = "the Vampire",       stats = { Dagger=2, Body=1, Mind=1, Spirit=1, Luck=1 },  tier=0, alignment="any" },
-        { name = "the Elder Vampire", stats = { Dagger=3, Body=2, Mind=1, Spirit=1, Luck=5 },  tier=1, alignment="any" },
-        { name = "the Nosferatu",     stats = { Dagger=4, Body=3, Mind=2, Spirit=2, Luck=7 },  tier=2, alignment="any" },
-        -- "HP drain" effect flag: add as a special_effect entry when implementing
+        { name = "the Vampire",       stats = { Dagger=2, Luck=4, Accuracy=3, Speed=3, Body=1, Mind=1, Spirit=1 },        tier=0, alignment="any" },
+        { name = "the Vampire",       stats = { Regeneration=2, Luck=4, Accuracy=3, Speed=3, Body=1, Mind=1, Spirit=1 },  tier=0, alignment="any" },
+        { name = "the Elder Vampire", stats = { Dagger=3, Luck=7, Accuracy=3, Speed=3, Body=2, Mind=1, Spirit=1 },        tier=1, alignment="any" },
+        { name = "the Elder Vampire", stats = { Regeneration=3, Luck=7, Accuracy=3, Speed=3, Body=2, Mind=1, Spirit=1 },  tier=1, alignment="any" },
+        { name = "the Nosferatu",     stats = { Dagger=4, Luck=10, Accuracy=4, Speed=4, Body=3, Mind=2, Spirit=2 },       tier=2, alignment="any" },
+        { name = "the Nosferatu",     stats = { Regeneration=4, Luck=10, Accuracy=4, Speed=4, Body=3, Mind=2, Spirit=2 }, tier=2, alignment="any" },
     },
 
     -- -------------------------------------------------------------------------
     -- MINOTAUR LINE (Hybrid Personality bucket)
     -- Uses Body/Spirit/Mind; UNIQUE: Perception GM at lord tier
-    -- NOTE: Perception [CAP] — stays at +1
     -- -------------------------------------------------------------------------
     MinotaurLine = {
-        { name = "the Minotaur",          stats = { Axe=2, Endurance=5, Body=1 },                          tier=0, alignment="any" },
-        { name = "the Minotaur Headsman", stats = { Axe=3, Endurance=6, Body=2, Spirit=1 },               tier=1, alignment="any" },
-        { name = "the Minotaur Lord",     stats = { Axe=4, Endurance=8, Perception=1, Body=2, Spirit=1 }, tier=2, alignment="any" },
+        { name = "the Minotaur",          stats = { Axe=2, Endurance=6, Might=4 },                  tier=0, alignment="any" },
+        { name = "the Minotaur Headsman", stats = { Axe=3, Endurance=8, Might=5, Body=2, Spirit=1 }, tier=1, alignment="any" },
+        { name = "the Minotaur Lord",     stats = { Axe=4, Endurance=10, Might=6, Body=2, Spirit=1 }, tier=2, alignment="any" },
     },
 
     -- -------------------------------------------------------------------------
@@ -315,11 +330,11 @@ M.Suffixes = {
     --       Both share a display name but differ in tier and prefix pairing.
     -- -------------------------------------------------------------------------
     SorcererLine = {
-        { name = "the Sorcerer",      stats = { Intellect=5, Fire=1, Air=1, Water=1, Earth=1 },                                tier=0, alignment="any"   },
-        { name = "the Wizard",        stats = { Intellect=8, Fire=2, Air=2, Meditation=2, SP=12 },                             tier=1, alignment="any"   },
-        { name = "the Master Wizard", stats = { Intellect=12, Fire=2, Air=2, Water=2, Earth=2, Meditation=3, SP=18 },          tier=2, alignment="any"   }, -- neutral 2nd promo, no moral school
-        { name = "the Archmage",      stats = { Intellect=12, Fire=2, Air=2, Water=2, Earth=2, Light=3, Meditation=3, SP=20 }, tier=2, alignment="light" },
-        { name = "the Lich",          stats = { Intellect=12, Fire=2, Air=2, Water=2, Earth=2, Dark=3,  Meditation=3, SP=20 }, tier=2, alignment="dark"  },
+        { name = "the Sorcerer",      stats = { Intellect=6, SP=10, Fire=1, Air=1, Water=1, Earth=1 },                                tier=0, alignment="any"   },
+        { name = "the Wizard",        stats = { Intellect=9, SP=15, Meditation=2, Fire=2, Air=2 },                                   tier=1, alignment="any"   },
+        { name = "the Master Wizard", stats = { Intellect=12, SP=20, Meditation=3, Fire=2, Air=2, Water=2, Earth=2 },                 tier=2, alignment="any"   },
+        { name = "the Archmage",      stats = { Intellect=12, SP=22, Meditation=3, Light=3, Fire=2, Air=2, Water=2, Earth=2 },       tier=2, alignment="light" },
+        { name = "the Lich",          stats = { Intellect=12, SP=22, Meditation=3, Dark=3, Fire=2, Air=2, Water=2, Earth=2 },         tier=2, alignment="dark"  },
     },
 
     -- -------------------------------------------------------------------------
@@ -330,9 +345,9 @@ M.Suffixes = {
     --   MasterNecromancer (118)  → Power Lich
     -- -------------------------------------------------------------------------
     NecromancerLine = {
-        { name = "the Lich",         stats = { Intellect=5, Dark=2, Earth=1, Water=1 },                                                          tier=0, alignment="any" },
-        { name = "the Greater Lich", stats = { Intellect=8, Dark=3, Earth=2, Water=2, Meditation=2 },                                            tier=1, alignment="any" },
-        { name = "the Power Lich",   stats = { Intellect=12, Dark=4, Fire=2, Air=2, Water=2, Earth=2, Meditation=3, SP=20 },                     tier=2, alignment="any" },
+        { name = "the Lich",         stats = { Intellect=6, SP=10, Dark=2, Fire=1, Air=1, Water=1, Earth=1 },                                           tier=0, alignment="any" },
+        { name = "the Greater Lich", stats = { Intellect=9, SP=15, Dark=3, Meditation=2, Fire=2, Air=2, Water=2, Earth=2 },                              tier=1, alignment="any" },
+        { name = "the Power Lich",   stats = { Intellect=12, SP=22, Dark=4, Meditation=3, Fire=2, Air=2, Water=2, Earth=2 },                             tier=2, alignment="any" },
     },
 
     -- -------------------------------------------------------------------------
@@ -343,11 +358,11 @@ M.Suffixes = {
     -- UNIQUE: all 3 divine schools to GM; Meditation GM
     -- -------------------------------------------------------------------------
     ClericLine = {
-        { name = "the Cleric",          stats = { Mace=2, Personality=4, Spirit=1, Mind=1, Body=1 },                 tier=0, alignment="any"   },
-        { name = "the Priest",          stats = { Mace=2, Personality=5, Spirit=1, Mind=1, Body=1, Meditation=1 },   tier=0, alignment="any"   }, -- MM8 base / MM7 1st promo
-        { name = "the High Priest",     stats = { Personality=8, Spirit=2, Mind=2, Body=2, Meditation=3, SP=15 },    tier=2, alignment="any"   }, -- neutral 2nd promo
-        { name = "the Priest of Light", stats = { Personality=8, Spirit=2, Mind=2, Body=2, Light=3, Meditation=3 },  tier=2, alignment="light" },
-        { name = "the Priest of Dark",  stats = { Personality=8, Spirit=2, Mind=2, Body=2, Dark=3,  Meditation=3 },  tier=2, alignment="dark"  },
+        { name = "the Cleric",          stats = { Personality=5, Spirit=1, Mind=1, Body=1 },                                  tier=0, alignment="any"   },
+        { name = "the Priest",          stats = { Personality=6, Spirit=1, Mind=1, Body=1, Meditation=2 },                    tier=0, alignment="any"   },
+        { name = "the High Priest",     stats = { Personality=9, SP=18, Spirit=2, Mind=2, Body=2, Meditation=3 },             tier=2, alignment="any"   },
+        { name = "the Priest of Light", stats = { Personality=9, Light=3, Spirit=2, Mind=2, Body=2, Meditation=3 },           tier=2, alignment="light" },
+        { name = "the Priest of Dark",  stats = { Personality=9, Dark=3, Spirit=2, Mind=2, Body=2, Meditation=3 },            tier=2, alignment="dark"  },
     },
 
     -- -------------------------------------------------------------------------
@@ -360,10 +375,9 @@ M.Suffixes = {
     --       this suffix focuses on what's unique: DragonMagic, SP, Might
     -- -------------------------------------------------------------------------
     DragonLine = {
-        { name = "the Dragon",        stats = { DragonMagic=1, Might=4, SP=10, Body=1, Spirit=1 },             tier=0, alignment="any" },
-        { name = "the Flight Leader", stats = { DragonMagic=2, Might=5, SP=15, Body=2, Spirit=1 },             tier=1, alignment="any" },
-        { name = "the Great Wyrm",    stats = { DragonMagic=3, Might=6, SP=20, Personality=8, Body=2, Spirit=2 }, tier=2, alignment="any" },
-        -- DragonMagic maps to the Dragon class's unique spell skill (tune scale per implementation)
+        { name = "the Dragon",        stats = { DragonMagic=1, Might=5, SP=12, Endurance=3 },                  tier=0, alignment="any" },
+        { name = "the Flight Leader", stats = { DragonMagic=2, Might=7, SP=18, Endurance=4 },                  tier=1, alignment="any" },
+        { name = "the Great Wyrm",    stats = { DragonMagic=3, Might=9, SP=28, Endurance=6 },                  tier=2, alignment="any" },
     },
 
     -- -------------------------------------------------------------------------
@@ -371,22 +385,24 @@ M.Suffixes = {
     -- UNIQUE: Alchemy GM, Meditation GM; only class to access all 7 spell schools
     -- -------------------------------------------------------------------------
     DruidLine = {
-        { name = "the Druid",       stats = { Alchemy=1, Fire=1, Spirit=1, Mind=1 },                              tier=0, alignment="any"   },
-        { name = "the Great Druid", stats = { Alchemy=2, Meditation=2, Fire=2, Spirit=2, Body=1 },                tier=1, alignment="any"   },
-        { name = "the Arch Druid",  stats = { Alchemy=3, Meditation=3, Fire=2, Air=2, Water=2, Earth=2 },         tier=2, alignment="light" },
-        { name = "the Warlock",     stats = { Alchemy=3, Meditation=3, Spirit=2, Mind=2, Body=2, Dark=2 },        tier=2, alignment="dark"  },
+        { name = "the Druid",       stats = { Alchemy=1, Intellect=5, Personality=5, Fire=1, Air=1, Water=1, Earth=1, Spirit=1, Mind=1, Body=1 },                  tier=0, alignment="any"   },
+        { name = "the Great Druid", stats = { Alchemy=2, Intellect=7, Personality=7, Fire=1, Air=1, Water=1, Earth=1, Spirit=1, Mind=1, Body=1 },                tier=1, alignment="any"   },
+        { name = "the Great Druid", stats = { Meditation=2, Intellect=7, Personality=7, Fire=1, Air=1, Water=1, Earth=1, Spirit=1, Mind=1, Body=1 },              tier=1, alignment="any"   },
+        { name = "the Arch Druid",  stats = { Alchemy=3, Intellect=9, Personality=9, Fire=2, Air=2, Water=2, Earth=2, Spirit=2, Mind=2, Body=2, Light=2 },        tier=2, alignment="light" },
+        { name = "the Arch Druid",  stats = { Meditation=3, Intellect=9, Personality=9, Fire=2, Air=2, Water=2, Earth=2, Spirit=2, Mind=2, Body=2, Light=2 },     tier=2, alignment="light" },
+        { name = "the Warlock",     stats = { Alchemy=3, Intellect=9, Personality=9, Fire=2, Air=2, Water=2, Earth=2, Spirit=2, Mind=2, Body=2, Dark=2 },         tier=2, alignment="dark"  },
+        { name = "the Warlock",     stats = { Meditation=3, Intellect=9, Personality=9, Fire=2, Air=2, Water=2, Earth=2, Spirit=2, Mind=2, Body=2, Dark=2 },      tier=2, alignment="dark"  },
     },
 
     -- -------------------------------------------------------------------------
     -- RANGER LINE (Ranger bucket)
     -- Both school groups at minor levels; UNIQUE: Identify Monster GM, Axe GM
-    -- NOTE: IdentifyMonster [CAP] — stays at +1 regardless of tier
     -- -------------------------------------------------------------------------
     RangerLine = {
-        { name = "the Ranger",        stats = { Axe=2, IdentifyMonster=1, Fire=1, Spirit=1 },        tier=0, alignment="any"   },
-        { name = "the Hunter",        stats = { Axe=3, IdentifyMonster=1, Fire=2, Spirit=2 },        tier=1, alignment="any"   },
-        { name = "the Ranger Lord",   stats = { Axe=4, IdentifyMonster=1, Light=2, Accuracy=5 },     tier=2, alignment="light" },
-        { name = "the Bounty Hunter", stats = { Axe=4, IdentifyMonster=1, Dark=2, Speed=5 },         tier=2, alignment="dark"  },
+        { name = "the Ranger",        stats = { Axe=2, Accuracy=4, Speed=3 },                        tier=0, alignment="any"   },
+        { name = "the Hunter",        stats = { Axe=3, Accuracy=5, Fire=2, Spirit=2 },               tier=1, alignment="any"   },
+        { name = "the Ranger Lord",   stats = { Axe=4, Accuracy=6, Light=2 },                        tier=2, alignment="light" },
+        { name = "the Bounty Hunter", stats = { Axe=4, Speed=8, Dark=2 },                            tier=2, alignment="dark"  },
     },
 
 } -- end M.Suffixes

@@ -58,9 +58,17 @@ local hook, autohook, autohook2, asmpatch = mem.hook, mem.autohook, mem.autohook
 -- Single-line, no redundant prefix/suffix name headers (the item's title
 -- already shows those, via ItemSystemDisplay.lua). Uses
 -- ItemSystemInternal.FilterStatsForItem so this can never display a
--- weapon-skill bonus that ApplyStats (ItemSystem.lua) wouldn't actually
--- apply -- e.g. a Mace with "the Knight" suffix shows only its Shield/
--- Endurance stats, not the Sword bonus that suffix also carries.
+-- weapon-skill bonus that SumCuratedBonuses (ItemSystem.lua) wouldn't
+-- actually apply -- e.g. a Mace with "the Knight" suffix shows only its
+-- Shield/Endurance stats, not the Sword bonus that suffix also carries.
+--
+-- Mirrors SumCuratedBonuses exactly (see ItemSystem.lua, per
+-- README_ItemSystem.md "Stat Count Cap"): quality-scale, sum SAME-NAME
+-- bonuses across prefix+suffix FIRST, then rank by value and keep only the
+-- top MAX_ITEM_STATS -- attributes and skills compete together. (Skill
+-- bonuses may additionally be capped at the viewing character's base skill
+-- when applied -- that cap is per-character at query time, so the tooltip
+-- shows the item's own values.)
 local function CuratedEnchantmentText(item)
     local prefix, suffix = GetItemPrefix(item), GetItemSuffix(item)
     if not prefix and not suffix then return nil end
@@ -68,29 +76,31 @@ local function CuratedEnchantmentText(item)
     local entry = ItemSystemInternal.GetCuratedEntry(item)
     local quality = (entry and entry.quality) or 0.60
 
-    -- Accumulate per-entry with quality applied (matching SumCuratedBonuses),
-    -- then trim to MAX_ITEM_STATS so the tooltip matches actual bonuses.
+    -- Sum same-name bonuses first...
     local totals = {}
-    local function addStats(entry)
-        if not entry or not entry.stats then return end
-        local stats = ItemSystemInternal.FilterStatsForItem(item, entry.stats)
-        for name, value in pairs(stats) do
-            local adj = math.max(1, math.floor(value * quality))
-            totals[name] = (totals[name] or 0) + adj
+    local function collectStats(stats)
+        if not stats then return end
+        local filtered = ItemSystemInternal.FilterStatsForItem(item, stats)
+        for name, value in pairs(filtered) do
+            if ItemSystemInternal.StatMap[name] or ItemSystemInternal.SkillMap[name] then
+                local adj = math.max(1, math.floor(value * quality))
+                totals[name] = (totals[name] or 0) + adj
+            end
         end
     end
-    addStats(prefix)
-    addStats(suffix)
+    collectStats(prefix and prefix.stats)
+    collectStats(suffix and suffix.stats)
 
-    local names = {}
+    -- ...then rank and keep only the top MAX_ITEM_STATS.
+    local ranked = {}
     for name, value in pairs(totals) do
-        names[#names + 1] = { name = name, value = value }
+        ranked[#ranked + 1] = { name = name, value = value }
     end
-    table.sort(names, function(a, b) return a.value > b.value end)
-    local maxCount = ItemSystemInternal.MAX_ITEM_STATS
+    table.sort(ranked, function(a, b) return a.value > b.value end)
+
     local parts = {}
-    for i = 1, math.min(maxCount, #names) do
-        parts[#parts + 1] = names[i].name .. " +" .. names[i].value
+    for i = 1, math.min(ItemSystemInternal.MAX_ITEM_STATS, #ranked) do
+        parts[#parts + 1] = ranked[i].name .. " +" .. ranked[i].value
     end
     if #parts == 0 then return nil end
     table.sort(parts)
@@ -99,7 +109,7 @@ end
 
 function events.BuildItemInformationBox(t)
     if not Game.ItemSystemEnabled then return end
-    if t.Enchantment == nil then return end  -- this call is Type/BasicStat/Enchantment together
+    if t.Enchantment == nil then return end  -- only fires when native engine populated the row (Charges > 0)
 
     local ok, err = pcall(function()
         local text = CuratedEnchantmentText(t.Item)

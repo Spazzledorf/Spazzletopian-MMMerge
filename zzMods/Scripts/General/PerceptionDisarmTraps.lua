@@ -29,4 +29,14 @@ function events.GetSkill(t)
     t.Result = t.Player.Skills[const.Skills.Perception]
 end
 
+-- Remove DisarmTraps from training halls — it's merged into Perception
+function events.PopulateLearnSkillsDialog(t)
+    if t.PicType ~= const.HouseType.Training then return end
+    for i = #t.Result, 1, -1 do
+        if t.Result[i] == const.Skills.DisarmTraps then
+            table.remove(t.Result, i)
+        end
+    end
+end
+
 MF.LogInit2(LogId)
